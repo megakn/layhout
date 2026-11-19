@@ -1,0 +1,1730 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Montar Layout SVC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Onest:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config={theme:{extend:{fontFamily:{display:['Unbounded','system-ui','sans-serif'],sans:['Onest','system-ui','sans-serif'],mono:['"JetBrains Mono"','ui-monospace','monospace']},
+colors:{ink:'var(--ink)',muted:'var(--muted)',line:'var(--line)',accent:'var(--accent)',glass:'var(--glass)'}}}}
+</script>
+<style>
+/* Layout: nav fixa translúcida (estilo Apple) → Bento Grid de vidro sobre fundo com gradientes suaves; planta do galpão como bloco principal */
+:root{
+  --bg:#07090d; --ink:#eef2f5; --muted:#8c97a3; --line:rgba(255,255,255,.09); --glass:rgba(22,27,34,.55);
+  --accent:#4cc3ff; --amber:#ffb547;
+  color-scheme:dark;
+}
+html,body{background:var(--bg);color:var(--ink)}
+body{font-family:Onest,system-ui,sans-serif;min-height:100%;overflow-x:hidden}
+.aurora{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.aurora i{position:absolute;border-radius:50%;filter:none;opacity:.10}
+.aurora i:nth-child(1){width:46vw;height:46vw;left:-12vw;top:-14vw;background:#0e6d9c}
+.aurora i:nth-child(2){width:38vw;height:38vw;right:-10vw;top:18vh;background:#b86b12;opacity:.16}
+.aurora i:nth-child(3){width:50vw;height:40vw;left:30vw;bottom:-22vw;background:#123f7a;opacity:.3}
+.grain{position:fixed;inset:0;z-index:0;pointer-events:none;background-image:radial-gradient(rgba(255,255,255,.035) 1px,transparent 1px);background-size:22px 22px}
+.glass{background:var(--glass);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border:1px solid var(--line)}
+.sk{background:linear-gradient(90deg,rgba(255,255,255,.04) 0%,rgba(255,255,255,.1) 50%,rgba(255,255,255,.04) 100%);background-size:200% 100%;animation:sh 1.2s linear infinite;border-radius:10px}
+@keyframes sh{to{background-position:-200% 0}}
+.tnum{font-variant-numeric:tabular-nums}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.spin{animation:spin 6s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{50%{opacity:.45}}
+.noscroll::-webkit-scrollbar{display:none}.noscroll{scrollbar-width:none}
+@media (prefers-reduced-motion:reduce){.sk,.spin{animation:none}}
+
+/* Otimização segura: mantém React/Framer originais */
+.glass{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+
+
+/* SVC FAST UI: preserva componentes e elimina custo visual de transições/blur */
+.glass{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+</style>
+</head>
+<body>
+
+<div class="aurora"><i></i><i></i><i></i></div>
+<div class="grain"></div>
+<div id="root" class="relative z-10"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/framer-motion@11.11.17/dist/framer-motion.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script>
+/* Bibliotecas pesadas sob demanda: a tela abre primeiro. */
+const SVC_LIBS={};
+function svcLoadOne(url){return new Promise((resolve,reject)=>{const e=document.createElement("script");e.src=url;e.async=true;e.onload=()=>resolve(true);e.onerror=()=>{e.remove();reject(new Error("Falha "+url))};document.head.appendChild(e)})}
+/* tenta cada endereço em ordem: se a rede da empresa bloquear um CDN, usa o próximo */
+function svcLoadScript(key,urls,ok){
+  if(SVC_LIBS[key])return SVC_LIBS[key];
+  urls=[].concat(urls);
+  SVC_LIBS[key]=(async()=>{for(const u of urls){try{await svcLoadOne(u);if(!ok||ok())return true}catch(e){}}delete SVC_LIBS[key];throw new Error("Falha ao carregar "+key)})();
+  return SVC_LIBS[key];
+}
+const ensureXLSX=()=>window.XLSX?Promise.resolve(true):svcLoadScript("xlsx",["https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js","https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js","https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"],()=>!!window.XLSX);
+const ensureJSPDF=()=>window.jspdf?Promise.resolve(true):svcLoadScript("jspdf",["https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js","https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js","https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"],()=>!!window.jspdf);
+/* lê CSV/TXT respeitando a codificação (UTF-8, UTF-16 do Excel "Texto Unicode" ou ANSI/Latin-1) */
+async function svcReadText(f){const buf=new Uint8Array(await f.arrayBuffer());
+  if(buf[0]===0xFF&&buf[1]===0xFE)return new TextDecoder("utf-16le").decode(buf.subarray(2));
+  if(buf[0]===0xFE&&buf[1]===0xFF)return new TextDecoder("utf-16be").decode(buf.subarray(2));
+  if(buf.length>3&&buf[1]===0&&buf[3]===0&&buf[0]!==0)return new TextDecoder("utf-16le").decode(buf);
+  try{return new TextDecoder("utf-8",{fatal:true}).decode(buf).replace(/^\uFEFF/,"")}catch(e){return new TextDecoder("windows-1252").decode(buf)}}
+/* abre qualquer planilha (xlsx/xls/xlsm/csv/txt) e devolve o workbook */
+async function svcReadWorkbook(f,opts){await ensureXLSX();
+  if(/\.(csv|txt|tsv)$/i.test(f.name)){let t=await svcReadText(f);const first=(t.split(/\r?\n/).find(l=>l.trim())||"");
+    if(first.includes("\t"))return XLSX.read(t,{type:"string",raw:true,FS:"\t",...(opts||{})});
+    if(first.split(";").length>first.split(",").length)return XLSX.read(t,{type:"string",raw:true,FS:";",...(opts||{})});
+    return XLSX.read(t,{type:"string",raw:true,...(opts||{})})}
+  return XLSX.read(new Uint8Array(await f.arrayBuffer()),{type:"array",...(opts||{})})}
+/* ============ DADOS ============ */
+const CARRIERS={
+  AL:{n:"ALC",bg:"#111111",fg:"#ffffff"},
+  EC:{n:"ECO EXPRESS",bg:"#f6e2c0",fg:"#1b1b1b"},
+  MS:{n:"M.J SIMÕES",bg:"#8a8a8a",fg:"#ffffff"},
+  HW:{n:"HAWK",bg:"#16357a",fg:"#ffffff"},
+  ME:{n:"MELI EXTRA",bg:"#f4c7ad",fg:"#1b1b1b"},
+  PL:{n:"PRALOG",bg:"#7b5ea7",fg:"#ffffff"},
+  OT:{n:"ONTIME",bg:"#ffef2e",fg:"#1b1b1b"},
+  PC:{n:"PARCEIRO",bg:"#ffffff",fg:"#1b1b1b"},
+  KG:{n:"KANGU",bg:"#f39200",fg:"#1b1b1b"},
+  DL:{n:"DELUNA",bg:"#4f7a2e",fg:"#ffffff"},
+  CM:{n:"COOPMETRO",bg:"#22e024",fg:"#1b1b1b"},
+  DC:{n:"DECARGO",bg:"#22e6ea",fg:"#1b1b1b"},
+  PY:{n:"PY",bg:"#b8860b",fg:"#ffffff"},
+  AV:{n:"AVTLOG",bg:"#0f766e",fg:"#ffffff"},
+  VUC:{n:"VUC (todas)",bg:"#6d28d9",fg:"#ffffff"},
+  X:{n:"Bloqueada",bg:"#e5262a",fg:"#ffffff"},
+  V:{n:"Vazia",bg:"#e9ecef",fg:"#8a929b"}
+};
+function fill(o,a,b,code,s=1){if(a<=b){for(let i=a;i<=b;i+=s)o[i]=code}else{for(let i=a;i>=b;i-=s)o[i]=code}return o}
+const build=steps=>{const o={};steps.forEach(st=>fill(o,...st));return o};
+const LAYOUTS={
+  "AM0-CHP":{map:build([[1,31,"X",2],[2,4,"AL",2],[6,8,"CM",2],[10,20,"KG",2],[22,26,"MS",2],[28,34,"X",2],
+    [35,43,"HW"],[44,44,"X"],[45,49,"OT"],[50,50,"X"],[51,52,"DC"],[53,53,"X"],[54,54,"EC"],[55,55,"X"],[56,56,"DL"],[57,65,"X"],
+    [88,76,"X"],[75,75,"DL"],[74,72,"EC"],[71,71,"OT"],[70,69,"PC"],[68,67,"HW"],[66,66,"CM"],[89,97,"X"]]),
+    tags:{},veh:{top:"Passeio",bot:"VUC",right:"VUC"}},
+  "AM":{map:build([[1,31,"ME",2],[2,8,"PC",2],[10,22,"KG",2],[24,34,"ME",2],
+    [35,38,"PC"],[39,45,"DL"],[46,49,"MS"],[50,54,"AL"],[55,60,"DC"],[61,65,"X"],
+    [88,79,"HW"],[78,74,"CM"],[73,73,"PY"],[72,69,"EC"],[68,66,"OT"],[89,97,"X"]]),
+    tags:{},veh:{top:"Passeio",bot:"Passeio",right:"VUC"}},
+  "PM":{map:build([[1,9,"DC",2],[11,17,"MS",2],[19,23,"EC",2],[25,31,"CM",2],[2,4,"KG",2],[6,6,"PY"],[8,14,"OT",2],[16,22,"DL",2],[24,34,"PC",2],
+    [35,39,"KG"],[40,65,"ME"],
+    [88,83,"HW"],[82,81,"AL"],[80,77,"DL"],[76,76,"DC"],[75,75,"OT"],[74,74,"EC"],[73,72,"PC"],[71,66,"HW"],[89,97,"HW"]]),
+    tags:{},veh:{top:"Passeio",bot:"Passeio",right:"VUC"}},
+  "SD":{map:build([[1,31,"X",2],[2,6,"DC",2],[8,8,"EC"],[10,14,"OT",2],[16,20,"MS",2],[22,34,"HW",2],
+    [35,37,"PC"],[38,40,"DL"],[41,42,"CM"],[43,50,"KG"],[51,65,"X"],[88,66,"X"],[89,97,"X"]]),
+    tags:{},
+    tagBelow:true,veh:{top:"Passeio",bot:"—",right:"VUC"}}
+};
+const rua=v=>v<=34?(v%2?1:2):v<=65?3:v<=88?5:4;
+const area=v=>["","Rua 1 · coluna esquerda (ímpares)","Rua 2 · coluna esquerda (pares)","Rua 3 · ao lado da esteira","Rua 4 · lado direito (VUC)","Rua 5 · frente do mezanino (expedição VUC)"][rua(v)];
+const vehOf=(L,v)=>v<=34?"—":v<=65?L.veh.top:v<=88?L.veh.bot:L.veh.right;
+const SZ=36,STEP=42;
+function pos(v){
+  if(v<=34){const r=Math.floor((v-1)/2);return{x:v%2?40:86,y:98+r*STEP}}
+  if(v<=65)return{x:128+(v-35)*STEP,y:56};
+  if(v<=88)return{x:204+(88-v)*STEP,y:606};
+  return{x:1320,y:250+(v-89)*STEP};
+}
+const BLOCKS_DEF={
+  rampaS:{x:10,y:8,w:80,h:40,t:"RAMPA\nSAÍDA"},rampaU:{x:1300,y:130,w:98,h:40,t:"RAMPA ↑"},rampaU1:{x:1300,y:760,w:98,h:44,t:"RAMPA ↑ 1"},
+  est1:{x:250,y:214,w:1000,h:24,t:"ESTEIRA"},est2:{x:250,y:296,w:1000,h:24,t:"ESTEIRA"},mez:{x:250,y:388,w:480,h:58,t:"MEZANINO"},
+  exp:{x:190,y:592,w:986,h:66,t:"",dashed:true}};
+const TAGS_DEF={1:{x:36,y:70},2:{x:84,y:70},3:{x:128,y:4},4:{x:1316,y:222},5:{x:204,y:578}};
+const CAPS_DEF={3:{x:200,y:140},5:{x:204,y:684},4:{x:1250,y:636}};
+// onde fica o nome da gaiola/rota em relação à vaga (x = centro do rótulo, ou esquerda se side)
+const shortTag=t=>String(t||"").replace(/_[A-Z]{2,4}\d*$/i,"");
+function tagPlace(v,below,len){const r=rua(v);const two=len>5&&v%2===0;
+  if(r===3)return below?{cx:SZ/2,y:SZ+3+(two?17:0)}:{cx:SZ/2,y:two?-35:-18};
+  if(r===5)return{cx:SZ/2,y:SZ+3+(two?17:0)};
+  if(r===1)return{left:true,y:SZ/2-8};
+  return{side:true,x:SZ+4,y:SZ/2-8}}
+function mergeGeo(p){p=p||{};const slots={};for(let v=1;v<=97;v++)slots[v]=(p.slots&&p.slots[v])||pos(v);
+  const blocks={};Object.keys(BLOCKS_DEF).forEach(k=>blocks[k]={...BLOCKS_DEF[k],...((p.blocks||{})[k]||{})});
+  const tags={},caps={};[1,2,3,4,5].forEach(n=>{tags[n]=(p.tags||{})[n]||TAGS_DEF[n];if(CAPS_DEF[n])caps[n]=(p.caps||{})[n]||CAPS_DEF[n]});
+  return {slots,blocks,tags,caps}}
+function geoBounds(G){let W=0,H=0;Object.values(G.slots).forEach(p=>{W=Math.max(W,p.x+SZ);H=Math.max(H,p.y+SZ)});
+  Object.values(G.blocks).forEach(b=>{W=Math.max(W,b.x+b.w);H=Math.max(H,b.y+b.h)});Object.values(G.caps).forEach(c=>{W=Math.max(W,c.x+150);H=Math.max(H,c.y+16)});
+  return {W:Math.max(W+12,400),H:Math.max(H+16,300)}}
+const capText=(L,n)=>n===3?"Rua 3 · "+L.veh.top+"   ←   sentido de saída":n===5?"Rua 5 · Expedição VUC"+(L.veh.bot&&L.veh.bot!=="—"?" · "+L.veh.bot:""):"Rua 4 · "+L.veh.right;
+const allV=()=>{const m={};for(let v=1;v<=97;v++)m[v]="V";return m};
+const EMPTY_MAP=allV();
+const layoutVazio=L=>!Object.values(L.map).some(k=>k!=="V");
+function groups(L){const g={};Object.entries(L.map).forEach(([v,k])=>(g[k]=g[k]||[]).push(+v));Object.values(g).forEach(a=>a.sort((x,y)=>x-y));return g}
+function ranges(arr){const out=[];let i=0;while(i<arr.length){let j=i;const step=(arr[i]<=34&&arr[i+1]-arr[i]===2)?2:1;
+  while(j+1<arr.length&&arr[j+1]-arr[j]===step&&(step===1||arr[j+1]<=34))j++;
+  out.push(j>i?`${arr[i]}–${arr[j]}${step===2?" (ímpar/par)":""}`:`${arr[i]}`);i=j+1}return out.join(", ")}
+
+/* ============ UI ============ */
+if (!window.React || !window.ReactDOM || !window.htm || !window.Motion) {
+  document.getElementById("root").innerHTML='<div style="max-width:650px;margin:12vh auto;padding:28px;background:#171d25;color:white;font:16px Arial;border:1px solid #546575;border-radius:18px"><h2>Não foi possível carregar o aplicativo</h2><p>Uma das bibliotecas externas foi bloqueada pela rede. Tente abrir novamente ou usar outra conexão.</p><button onclick="location.reload()" style="padding:12px 24px;border:0;border-radius:9px;background:#4cc3ff;color:#00111e;font-weight:bold">Recarregar</button></div>';
+  throw new Error("Bibliotecas React, ReactDOM, htm ou Motion indisponíveis");
+}
+const {useState,useEffect,useRef,useMemo}=React;
+const {motion,AnimatePresence,LayoutGroup}=Motion;
+const html=htm.bind(React.createElement);
+const spring={type:"spring",stiffness:420,damping:32};
+const tactile={};
+const stagger={hidden:{},show:{transition:{staggerChildren:0,delayChildren:0}}};
+const rise={hidden:{opacity:1,y:0},show:{opacity:1,y:0,transition:{duration:0}}};
+
+function Swatch({k,size="sm"}){const c=CARRIERS[k];const cls=size==="lg"?"text-sm px-2.5 py-1 rounded-lg":"text-[10px] px-1.5 py-0.5 rounded-md";
+  return html`<span class=${"font-mono font-bold inline-block "+cls} style=${{background:c.bg,color:c.fg,boxShadow:"inset 0 0 0 1px rgba(0,0,0,.25)"}}>${k}</span>`}
+
+function Nav({cur,setCur}){
+  return html`<header class="fixed top-0 inset-x-0 z-50" style=${{paddingTop:"env(safe-area-inset-top,0px)"}}>
+    <div class="glass !border-x-0 !border-t-0" style=${{background:"rgba(7,9,13,.62)"}}>
+      <nav class="max-w-7xl mx-auto px-4 h-14 flex items-center gap-4">
+        <div class="flex items-center gap-2 shrink-0">
+          <span class="w-2 h-2 rounded-full" style=${{background:"var(--accent)",boxShadow:"0 0 12px var(--accent)"}}></span>
+          <span class="font-display text-[13px] tracking-tight">SVC<span class="text-muted font-sans font-medium"> · Montar layout</span></span>
+        </div>
+        <${LayoutGroup} id="tabs">
+          <div class="ml-auto flex gap-1 overflow-x-auto noscroll p-1 rounded-full" style=${{background:"rgba(255,255,255,.05)"}} role="tablist">
+            ${Object.keys(LAYOUTS).map(k=>html`<${motion.button} key=${k} id=${"tab-"+k} role="tab" aria-selected=${k===cur} onClick=${()=>setCur(k)}
+              class=${"relative shrink-0 px-3.5 sm:px-4 py-1.5 rounded-full text-[13px] font-medium transition-colors "+(k===cur?"text-black":"text-muted hover:text-ink")}>
+              ${k===cur&&html`<${motion.span} layoutId="pill" class="absolute inset-0 rounded-full" style=${{background:"var(--ink)"}} transition=${spring}/>`}
+              <span class="relative">${k}</span>
+            </${motion.button}>`)}
+          </div>
+        </${LayoutGroup}>
+      </nav>
+    </div>
+  </header>`;
+}
+
+function Card({className="",children,title,right}){
+  return html`<${motion.section} variants=${rise} class=${"glass rounded-3xl p-4 sm:p-5 min-w-0 "+className}
+      transition=${{duration:0}}>
+    ${title&&html`<div class="flex items-center justify-between gap-3 mb-3"><h2 class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold">${title}</h2>${right}</div>`}
+    ${children}
+  </${motion.section}>`;
+}
+
+function Skeleton(){
+  const b=(c)=>html`<div class=${"glass rounded-3xl p-6 "+c}><div class="sk h-3 w-24 mb-5"></div><div class="sk h-8 w-2/3 mb-3"></div><div class="sk h-3 w-1/2"></div></div>`;
+  return html`<div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+    ${b("md:col-span-8 h-48")}${b("md:col-span-4 h-48")}
+    <div class="glass rounded-3xl p-6 md:col-span-12"><div class="sk h-3 w-32 mb-5"></div><div class="sk w-full" style=${{height:"min(52vw,560px)"}}></div></div>
+    ${b("md:col-span-7 h-72")}${b("md:col-span-5 h-72")}
+  </div>`;
+}
+
+function Hero({cur,L,onClose}){
+  const g=groups(L);const total=Object.keys(L.map).length-(g.V||[]).length;const bloq=(g.X||[]).length;
+  const n=Object.keys(g).filter(k=>k!=="X"&&k!=="V").length;const vazio=layoutVazio(L);
+  const stat=(v,l,color)=>html`<div class="min-w-0"><div class="font-display text-2xl sm:text-3xl tnum leading-none" style=${{color}}>${v}</div><div class="text-muted text-[11px] mt-1">${l}</div></div>`;
+  return html`<${Card} className="md:col-span-8">
+    <div class="flex items-center justify-between gap-2"><div class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold">Layout do SVC</div>${onClose&&html`<button type="button" onClick=${onClose} class="text-xs text-muted hover:text-ink">Recolher</button>`}</div>
+    <h1 class="font-display text-3xl sm:text-4xl tracking-tight mt-1 mb-3" style=${{textWrap:"balance"}}>
+      <${AnimatePresence} mode="wait"><${motion.span} key=${cur} class="inline-block" initial=${{opacity:0,y:14}} animate=${{opacity:1,y:0}} exit=${{opacity:0,y:-14}} transition=${{duration:.3}}>${cur}</${motion.span}></${AnimatePresence}>
+    </h1>
+    ${vazio?html`<div class="rounded-xl px-3 py-2 text-xs max-w-lg" style=${{background:"rgba(255,181,71,.1)",color:"var(--amber)"}}>Nenhum layout ${cur} carregado neste navegador. Use <b>Ler desenho</b> no painel acima e mande o print do dia.</div>`:html`
+    <div class="grid grid-cols-3 gap-4 max-w-md">
+      ${stat(total-bloq,"vagas ativas","var(--ink)")}
+      ${stat(bloq,"bloqueadas (X)","#ff6b6e")}
+      ${stat(n,"transportadoras","var(--accent)")}
+    </div>
+    <div class="text-muted text-[11px] mt-2">${L.readAt?"Montado em "+L.readAt+" · para trocar, leia o desenho do dia ou use Limpar layout em Editar layout":""}</div>`}
+  </${Card}>`;
+}
+
+function Search({L,onPick}){
+  const [q,setQ]=useState("");const v=parseInt(q,10);const k=L.map[v];
+  return html`<${Card} className="md:col-span-4" title="Buscar vaga">
+    <label for="busca" class="sr-only">Número da vaga</label>
+    <input id="busca" inputmode="numeric" value=${q} onInput=${e=>{setQ(e.target.value.replace(/\D/g,"").slice(0,2));const n=parseInt(e.target.value,10);if(L.map[n])onPick(n)}}
+      placeholder="Ex.: 73" class="w-full bg-white/5 border border-line rounded-xl px-3 py-2 font-display text-xl tnum placeholder:text-white/20 outline-none focus:border-[var(--accent)] transition-colors"/>
+    <div class="mt-2 min-h-[40px]">
+      <${AnimatePresence} mode="wait">
+        ${k?html`<${motion.div} key=${v+k} initial=${{opacity:0,scale:.96}} animate=${{opacity:1,scale:1}} exit=${{opacity:0}} class="flex items-center gap-3">
+            <${Swatch} k=${k} size="lg"/>
+            <div class="min-w-0"><div class="font-semibold">${CARRIERS[k].n}</div><div class="text-muted text-xs">${area(v)} · ${vehOf(L,v)}</div></div>
+          </${motion.div}>`
+        :html`<${motion.p} key="empty" initial=${{opacity:0}} animate=${{opacity:1}} class="text-muted text-sm">${q?"Essa vaga não existe neste layout.":"Digite o número (1 a 97) para ver a transportadora."}</${motion.p}>`}
+      </${AnimatePresence}>
+    </div>
+  </${Card}>`;
+}
+
+
+/* Linha fina com o resumo do layout + busca (quando Layout do SVC / Buscar vaga estão recolhidos) */
+function InfoStrip({cur,L,onPick,onOpen}){
+  const g=groups(L);const total=Object.keys(L.map).length-(g.V||[]).length;const bloq=(g.X||[]).length;
+  const n=Object.keys(g).filter(k=>k!=="X"&&k!=="V").length;const vazio=layoutVazio(L);
+  const [q,setQ]=useState("");const v=parseInt(q,10);const k=L.map[v];
+  return html`<${motion.section} variants=${rise} class="md:col-span-12 glass rounded-2xl px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-2 min-w-0">
+    <button type="button" onClick=${onOpen} aria-expanded="false" class="flex items-center gap-2 text-left">
+      <span class="text-muted text-xs">▶</span><span class="font-display text-lg leading-none">${cur}</span></button>
+    ${vazio?html`<span class="text-xs" style=${{color:"var(--amber)"}}>Layout não lido · use Ler desenho</span>`
+      :html`<span class="text-xs text-muted tnum"><b class="text-ink">${total-bloq}</b> ativas · <b style=${{color:"#ff6b6e"}}>${bloq}</b> bloqueadas · <b style=${{color:"var(--accent)"}}>${n}</b> transp.${L.readAt?" · montado "+L.readAt:""}</span>`}
+    <div class="ml-auto flex items-center gap-2 min-w-0">
+      ${k&&html`<span class="flex items-center gap-1.5 text-xs min-w-0"><${Swatch} k=${k}/><span class="truncate">${CARRIERS[k].n} · Rua ${rua(v)}</span></span>`}
+      ${q&&!k&&html`<span class="text-xs text-muted">não existe</span>`}
+      <label for="buscaMini" class="sr-only">Número da vaga</label>
+      <input id="buscaMini" inputmode="numeric" value=${q} onInput=${e=>{const t=e.target.value.replace(/\D/g,"").slice(0,2);setQ(t);const nn=parseInt(t,10);if(L.map[nn])onPick(nn)}}
+        placeholder="Vaga" class="w-20 bg-white/5 border border-line rounded-lg px-2 py-1 font-mono text-sm tnum placeholder:text-white/25 outline-none focus:border-[var(--accent)]"/>
+      <button type="button" onClick=${onOpen} class="text-xs text-muted hover:text-ink px-1">Mostrar</button>
+    </div>
+  </${motion.section}>`;
+}
+
+/* ============ IMAGEM DO LAYOUT (WhatsApp) ============ */
+async function renderLayoutPNG(cur,L){
+  try{await document.fonts.ready}catch(e){}
+  const G=L.geo,{W:MW,H:MH}=geoBounds(G);
+  const K=2,PAD=24,TOP=78,LEG_H=36;
+  const counts={};Object.values(L.map).forEach(k=>counts[k]=(counts[k]||0)+1);
+  const legend=Object.keys(CARRIERS).filter(k=>counts[k]);
+  const cols=5,legRows=Math.ceil(legend.length/cols);
+  const W=MW+PAD*2,H=TOP+MH+28+legRows*LEG_H+PAD+44;
+  const cv=document.createElement("canvas");cv.width=W*K;cv.height=H*K;const g=cv.getContext("2d");g.scale(K,K);
+  const F=(w,s)=>`${w} ${s}px Onest, Arial, sans-serif`;
+  const rr=(x,y,w,h,r)=>{g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()};
+  g.fillStyle="#ffffff";g.fillRect(0,0,W,H);
+  g.fillStyle="#111";g.font=F(800,28);g.textAlign="center";g.textBaseline="alphabetic";g.fillText("LAYOUT DO SVC - "+cur,W/2,42);
+  g.font=F(500,14);g.fillStyle="#555";g.fillText(new Date().toLocaleDateString("pt-BR")+"  ·  Kuehne+Nagel · Meli",W/2,63);
+  const OG=ondaPorGaiola();const SUG=svcSugSet(cur);const ondasUsadas=[...new Set(Object.values(L.tags).map(t=>OG[t]).filter(Boolean))].sort((a,b)=>a-b);
+  if(ondasUsadas.length){let lx=PAD;g.textBaseline="middle";g.textAlign="left";g.font=F(800,12);g.fillStyle="#111";g.fillText("ONDAS:",lx,28);lx+=g.measureText("ONDAS:").width+8;
+    ondasUsadas.forEach(o=>{const t="Onda "+o,w=g.measureText(t).width+14;g.fillStyle=ONDA_COR[(o-1)%10];rr(lx,19,w,18,4);g.fill();g.fillStyle="#04121b";g.fillText(t,lx+7,28.5);lx+=w+6});
+    if(SUG.size){g.font=F(600,11);g.fillStyle="#444";g.fillText("* = sugerida (sobrou vaga, já fica a da onda seguinte)",lx+6,28.5)}}
+  g.save();g.translate(PAD,TOP);
+  g.strokeStyle="#222";g.lineWidth=1.5;g.strokeRect(0,0,MW,MH);
+  Object.values(G.blocks).forEach(b=>{if(b.dashed){g.strokeStyle="#999";g.setLineDash([5,4]);g.strokeRect(b.x,b.y,b.w,b.h);g.setLineDash([]);return}
+    g.fillStyle="#fff";g.fillRect(b.x,b.y,b.w,b.h);g.strokeStyle="#222";g.lineWidth=1.2;g.strokeRect(b.x,b.y,b.w,b.h);
+    g.fillStyle="#111";g.font=F(700,b.h>40&&b.w>200?15:11);g.textAlign="center";g.textBaseline="middle";const ls=b.t.split("\n");ls.forEach((l,i)=>g.fillText(l,b.x+b.w/2,b.y+b.h/2+(i-(ls.length-1)/2)*13))});
+  [1,2,3,4,5].forEach(n=>{const t=G.tags[n];g.font=F(800,10);const s="RUA "+n,w=g.measureText(s).width+10;g.fillStyle="#0a4d8c";rr(t.x,t.y,w,17,8);g.fill();g.fillStyle="#fff";g.textAlign="left";g.textBaseline="middle";g.fillText(s,t.x+5,t.y+9)});
+  Object.keys(G.caps).forEach(n=>{const c=G.caps[n];g.font=F(600,11);g.fillStyle="#555";g.textAlign="left";g.textBaseline="top";g.fillText(capText(L,+n).toUpperCase(),c.x,c.y)});
+  for(let v=1;v<=97;v++){const k=L.map[v];if(!k)continue;const c=CARRIERS[k],p=G.slots[v];
+    g.fillStyle=c.bg;rr(p.x,p.y,SZ,SZ,6);g.fill();g.strokeStyle="rgba(0,0,0,.45)";g.lineWidth=1;g.stroke();
+    g.fillStyle=c.fg;g.textAlign="center";g.textBaseline="middle";g.font=F(600,10);g.fillText(String(v),p.x+SZ/2,p.y+11);g.font=F(800,12);g.fillText(k,p.x+SZ/2,p.y+25);
+    if(L.tags[v]){g.font=F(800,12);const t=shortTag(L.tags[v])+(SUG.has(L.tags[v])?"*":""),w=g.measureText(t).width+8,tp=tagPlace(v,L.tagBelow,t.length),tx=tp.left?p.x-w-4:tp.side?p.x+tp.x:p.x+tp.cx-w/2,ty=p.y+tp.y;const og=OG[L.tags[v]];g.fillStyle=og?ONDA_COR[(og-1)%10]:"#111";rr(tx,ty,w,16,3);g.fill();if(SUG.has(L.tags[v])){g.setLineDash([3,2]);g.strokeStyle="#111";g.lineWidth=1.2;g.stroke();g.setLineDash([])}g.fillStyle=og?"#04121b":"#fff";g.textAlign="center";g.textBaseline="middle";g.fillText(t,tx+w/2,ty+8.5)}}
+  g.restore();
+  const ly=TOP+MH+22,cw=(W-PAD*2)/cols;
+  legend.forEach((k,i)=>{const c=CARRIERS[k],x=PAD+(i%cols)*cw,y=ly+Math.floor(i/cols)*LEG_H;
+    g.fillStyle=c.bg;rr(x,y,34,24,5);g.fill();g.strokeStyle="rgba(0,0,0,.45)";g.stroke();
+    g.fillStyle=c.fg;g.font=F(800,11);g.textAlign="center";g.textBaseline="middle";g.fillText(k,x+17,y+12.5);
+    g.fillStyle="#111";g.font=F(600,13);g.textAlign="left";g.fillText(c.n,x+42,y+8);g.fillStyle="#666";g.font=F(500,11);g.fillText(plural(counts[k],"vaga","vagas"),x+42,y+21)});
+  g.fillStyle="#0a4d8c";g.fillRect(PAD,H-PAD-34,W-PAD*2,32);g.fillStyle="#fff";g.font=F(800,16);g.textAlign="center";g.textBaseline="middle";
+  g.fillText(`LAYOUT ${cur}   ·   CICLO ${planCiclo(cur)}   ·   ${new Date().toLocaleDateString("pt-BR")}`,W/2,H-PAD-17);
+  // encaixa numa folha A4 deitada (297 x 210 mm, 300 dpi)
+  const AW=3508,AH=2480,M=110;const a4=document.createElement("canvas");a4.width=AW;a4.height=AH;const ag=a4.getContext("2d");
+  ag.fillStyle="#fff";ag.fillRect(0,0,AW,AH);const f=Math.min((AW-2*M)/cv.width,(AH-2*M)/cv.height);const dw=cv.width*f,dh=cv.height*f;
+  ag.imageSmoothingQuality="high";ag.drawImage(cv,(AW-dw)/2,(AH-dh)/2,dw,dh);
+  return await new Promise(r=>a4.toBlob(r,"image/png"));
+}
+
+const WA_ICON=html`<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 00-8.6 15.1L2 22l5-1.3A10 10 0 1012 2zm0 18.2a8.2 8.2 0 01-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1112 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8s-.4-.1-.6.1-.7.8-.8 1-.3.2-.5.1a6.7 6.7 0 01-3.3-2.9c-.3-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 00-.7.3 3 3 0 00-.9 2.2 5.2 5.2 0 001.1 2.7 11.8 11.8 0 004.5 4c1.7.7 2.3.8 3.2.6a2.7 2.7 0 001.8-1.3 2.2 2.2 0 00.2-1.3c-.1-.1-.3-.2-.5-.3z"/></svg>`;
+function planCiclo(cur){let src=null;try{src=JSON.parse(localStorage.getItem("svc-plan2")||"null")}catch(e){}if(src&&src.empty)return cur;if(!src||!src.rows)src=parseDefault();
+  if(!src||!src.map)return cur;const c=detectCiclo(src.title||"",src.rows,src.map);const t=cicloTag(src.rows,src.map);return c===cur&&t?t:cur}
+function shareCaption(cur){const d=new Date().toLocaleDateString("pt-BR");return `*LAYOUT DO SVC – ${cur}*\nCiclo: ${planCiclo(cur)}\nData: ${d}`}
+const isMobile=()=>/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+function megaUrl(){let g="";try{g=localStorage.getItem("svc-mega")||""}catch(e){}
+  const m=g.match(/chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9]+)/);return m?"https://web.whatsapp.com/accept?code="+m[1]:(g||"")}
+async function shareToWhatsApp(cur,L,blob,setMsg){
+  blob=blob||await renderLayoutPNG(cur,L);
+  const name=`layout-svc-${cur}-${new Date().toLocaleDateString("pt-BR").replace(/\//g,"-")}.png`;
+  const text=shareCaption(cur);
+  if(isMobile()){try{const f=new File([blob],name,{type:"image/png"});
+    if(navigator.canShare&&navigator.canShare({files:[f]})){await navigator.share({files:[f],text,title:"Layout "+cur});setMsg("Escolha Operação MEGARIO e envie.");return}}
+    catch(x){if(x&&x.name==="AbortError"){setMsg("Compartilhamento cancelado.");return}}}
+  // computador: copia a imagem e abre o grupo direto no WhatsApp Web (sempre na mesma aba)
+  const url=megaUrl();let copied=false;
+  try{await navigator.clipboard.write([new ClipboardItem({"image/png":blob})]);copied=true}catch(x){}
+  const a=document.createElement("a");a.href=url||"https://web.whatsapp.com/";a.target="whatsapp_megario";a.rel="opener";document.body.appendChild(a);a.click();a.remove();
+  setMsg((copied?"Imagem copiada. ":"Não deu para copiar sozinho (use Ver imagem › Copiar). ")+(url?"O grupo Operação MEGARIO abriu no WhatsApp Web: aperte Ctrl+V e Enter.":"WhatsApp Web aberto: entre no grupo, Ctrl+V e Enter. Salve o link do grupo em Ver imagem › Link do grupo para abrir direto."));
+}
+function ShareModal({cur,L,onClose}){
+  const [url,setUrl]=useState(null);const [blob,setBlob]=useState(null);const [msg,setMsg]=useState("");const [big,setBig]=useState(false);
+  const [glink,setGlink]=useState(()=>{try{return localStorage.getItem("svc-mega")||""}catch(e){return ""}});const [cfg,setCfg]=useState(false);
+  const saveLink=v=>{setGlink(v);try{localStorage.setItem("svc-mega",v)}catch(e){}};
+  useEffect(()=>{let u;renderLayoutPNG(cur,L).then(b=>{setBlob(b);u=URL.createObjectURL(b);setUrl(u)});return()=>{if(u)URL.revokeObjectURL(u)}},[]);
+  const base=`layout-svc-${cur}-${new Date().toLocaleDateString("pt-BR").replace(/\//g,"-")}`;const fname=base+".png";
+  const download=async()=>{if(!blob)return;
+    try{const d=window.claude?.use?await window.claude.use("downloads"):null;
+      if(d){try{await d.save({filename:fname,data:blob});setMsg("Imagem salva.")}catch(e){setMsg(e&&e.code==="declined"?"Download cancelado.":"Não deu para baixar aqui. Segure (ou clique com o botão direito) na imagem e escolha Salvar.")}return}}catch(e){}
+    const a=document.createElement("a");a.href=url;a.download=fname;document.body.appendChild(a);a.click();a.remove();setMsg("Se o download não começar, segure (ou clique com o botão direito) na imagem e escolha Salvar.")};
+  const saveFile=async(name,data,url2)=>{try{const d=window.claude?.use?await window.claude.use("downloads"):null;
+      if(d){try{await d.save({filename:name,data});setMsg("Arquivo salvo.")}catch(e){setMsg(e&&e.code==="declined"?"Download cancelado.":"Não deu para baixar aqui. Segure (ou clique com o botão direito) na imagem e escolha Salvar.")}return}}catch(e){}
+    const a=document.createElement("a");a.href=url2;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url2),4000)};
+  const pdf=async()=>{if(!blob)return;try{await ensureJSPDF()}catch(e){setMsg("O gerador de PDF não carregou. Use Baixar PNG.");return}
+    const doc=new window.jspdf.jsPDF({orientation:"landscape",unit:"mm",format:"a4"});
+    const im=await new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.src=url});const c=document.createElement("canvas");c.width=im.naturalWidth;c.height=im.naturalHeight;
+    const cx=c.getContext("2d");cx.fillStyle="#fff";cx.fillRect(0,0,c.width,c.height);cx.drawImage(im,0,0);
+    doc.addImage(c.toDataURL("image/jpeg",.9),"JPEG",0,0,297,210);const b=doc.output("blob");await saveFile(base+".pdf",b,URL.createObjectURL(b))};
+  const copy=async()=>{if(!blob)return;try{await navigator.clipboard.write([new ClipboardItem({"image/png":blob})]);setMsg("Imagem copiada. Agora é só colar no grupo do WhatsApp.")}
+    catch(e){setMsg("Este navegador não deixou copiar. Segure (ou clique com o botão direito) na imagem e escolha Copiar imagem.")}};
+  return html`<${motion.div} class="fixed inset-0 z-[200] flex items-center justify-center p-4" initial=${{opacity:0}} animate=${{opacity:1}} exit=${{opacity:0}} style=${{background:"rgba(3,5,8,.72)",backdropFilter:"blur(6px)"}} onClick=${onClose}>
+    <${motion.div} onClick=${e=>e.stopPropagation()} initial=${{y:24,scale:.97}} animate=${{y:0,scale:1}} exit=${{y:24,opacity:0}} transition=${spring} class="glass rounded-3xl p-4 sm:p-5 w-full max-w-4xl max-h-[90vh] flex flex-col gap-3" style=${{background:"rgba(16,20,26,.96)"}}>
+      <div class="flex items-center justify-between gap-3"><div><div class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold">Imagem do layout · folha A4 deitada</div><div class="font-display text-lg">Layout ${cur}</div></div>
+        <${motion.button} ...${tactile} type="button" onClick=${onClose} class="text-muted hover:text-ink text-sm px-3 py-1.5 rounded-full border border-white/15">Fechar</${motion.button}></div>
+      <div class="flex-1 min-h-0 overflow-auto rounded-2xl bg-white">
+        ${url?html`<img src=${url} alt=${"Layout do SVC "+cur} onClick=${()=>setBig(!big)} title=${big?"Toque para ver inteiro":"Toque para ampliar"} class=${"h-auto block "+(big?"max-w-none cursor-zoom-out":"w-full cursor-zoom-in")} style=${big?{width:"260%"}:{}}/>`:html`<div class="sk h-64 w-full"></div>`}
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <${motion.button} ...${tactile} type="button" id="copyImg" onClick=${copy} disabled=${!blob} class="text-sm font-semibold px-4 py-2 rounded-full bg-white text-black">Copiar imagem</${motion.button}>
+        <${motion.button} ...${tactile} type="button" id="dlImg" onClick=${download} disabled=${!blob} class="text-sm font-medium px-4 py-2 rounded-full border border-white/20">Baixar PNG</${motion.button}>
+        <${motion.button} ...${tactile} type="button" id="dlPdf" onClick=${pdf} disabled=${!blob} class="text-sm font-medium px-4 py-2 rounded-full border border-white/20">Baixar PDF A4</${motion.button}>
+        <span class="text-xs" style=${{color:msg?"var(--accent)":"var(--muted)"}}>${msg||"Toque na imagem para ampliar e conferir as rotas."}</span>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-line">
+        <${motion.button} ...${tactile} type="button" id="sendMega" disabled=${!blob} onClick=${()=>shareToWhatsApp(cur,L,blob,setMsg)}
+          class="inline-flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-full" style=${{background:"#25d366",color:"#062b16"}}>${WA_ICON}Compartilhar no WhatsApp</${motion.button}>
+        <button type="button" onClick=${()=>setCfg(!cfg)} class="text-xs text-muted hover:text-ink underline underline-offset-2">${glink?"Link do grupo salvo · trocar":"Link do grupo (opcional)"}</button>
+        ${cfg&&html`<div class="basis-full flex flex-wrap items-center gap-2">
+          <label for="megaLink" class="text-xs text-muted">Link de convite da Operação MEGARIO (WhatsApp › dados do grupo › Convidar via link › Copiar link). Com ele, o botão abre o grupo direto no WhatsApp Web:</label>
+          <input id="megaLink" value=${glink} onInput=${e=>saveLink(e.target.value.trim())} placeholder="https://chat.whatsapp.com/..." class="flex-1 min-w-[220px] bg-white/5 border border-line rounded-lg px-3 py-1.5 text-xs text-ink outline-none focus:border-[var(--accent)]"/>
+        </div>`}
+      </div>
+    </${motion.div}>
+  </${motion.div}>`;
+}
+
+function planGaiolas(){let src=null;try{src=JSON.parse(localStorage.getItem("svc-plan2")||"null")}catch(e){}if(src&&src.empty)return [];if(!src||!src.rows)src=parseDefault();if(!src)return [];
+  const m=src.map||{};if(!(m.rota||m.gaiola)||!m.transp)return [];
+  const oc=src.ondaCalc||{};
+  return aggregate(src.rows,m).map(r=>({g:(r.gaiola&&normTxt(r.gaiola)!=="SACA"?r.gaiola:r.rota),k:r.k,onda:oc[r.key]||r.onda})).filter(r=>r.g&&r.k)}
+function ondaPorGaiola(){const o={};try{planGaiolas().forEach(r=>{if(r.onda)o[r.g]=r.onda})}catch(e){}return o}
+/* ============ LER DESENHO DO LAYOUT (Claude) ============ */
+const READ_PROMPT=`Você está lendo o desenho (print de planilha do Excel) de um layout de galpão logístico (SVC) da Kuehne+Nagel/Mercado Livre. O layout tem 97 vagas numeradas em 5 ruas:
+- Rua 1: coluna mais à esquerda, vagas ímpares 1, 3, 5 ... 31
+- Rua 2: coluna ao lado, vagas pares 2, 4, 6 ... 34
+- Rua 3: fileira de cima, vagas 35 a 65 (da esquerda para a direita)
+- Rua 4: coluna à direita (área VUC), vagas 89 a 97
+- Rua 5: fileira de baixo (Expedição VUC), vagas 88 a 66 (da esquerda para a direita)
+Cada vaga é um quadrado com a sigla da transportadora: AL=ALC (preto), EC=ECO EXPRESS (bege), MS=M.J SIMÕES (cinza), HW=HAWK (azul escuro), ME=MELI EXTRA (salmão), PL=PRALOG (roxo), OT=ONTIME (amarelo), PC=PARCEIRO (branco), KG=KANGU (laranja), DL=DELUNA (verde escuro), CM=COOPMETRO (verde claro), DC=DECARGO (ciano), PY (dourado).
+Quadrado vermelho, com ou sem "X", é X (bloqueada). Se a sigla não estiver legível, deduza pela cor. Se o número impresso estiver repetido ou errado, siga a sequência da rua. Na coluna VUC pode haver uma célula amarela "VUC" ao lado: a sigla é a do quadrado da vaga.
+Perto de algumas vagas (em cima, embaixo ou ao lado) pode estar escrito o nome da gaiola/rota, ex.: VG7_CHP, A13_SD, VC1, A14. Copie exatamente como está escrito. Ignore "Passeio", "VUC" isolado, setas, "ESTEIRA", "MEZANINO", "RAMPA".
+Responda SOMENTE com um JSON neste formato:
+{"titulo":"título do desenho, se houver","ciclo":"AM" | "PM" | "SD" | "AM0-CHP" | null,"vagas":{"1":"X","2":"DC","35":"PC"},"gaiolas":{"2":"A13_SD","35":"A14"},"duvidas":[11,46]}
+Em "vagas" coloque todas as vagas que aparecem no desenho. Em "duvidas" os números das vagas que você não conseguiu ler com certeza.`;
+
+function detectLayoutCycleFromDrawing(vagas){
+  const keys=Object.keys(LAYOUTS), scores=[];
+  for(const key of keys){
+    const ref=LAYOUTS[key].map||{};let hit=0,total=0,strong=0;
+    for(const [vv,kk] of Object.entries(vagas||{})){
+      const v=+vv,r=ref[v];if(!r||!kk||kk==="V")continue;
+      total++;
+      if(r===kk){hit++;if(kk!=="X")strong++}
+    }
+    scores.push({key,hit,total,strong,pct:total?hit/total:0});
+  }
+  scores.sort((a,b)=>b.pct-a.pct||b.strong-a.strong||b.hit-a.hit);
+  const best=scores[0],second=scores[1];
+  if(!best||best.total<20)return null;
+  const margin=second?best.pct-second.pct:best.pct;
+  return (best.pct>=0.62 && (margin>=0.06 || best.pct>=0.82))?best.key:null;
+}
+
+function distributeRoutes(map,tags){
+  const res={...tags};const used=new Set(Object.values(res).filter(Boolean));const byK={};
+  planGaiolas().forEach(r=>{if(!used.has(r.g)){(byK[r.k]=byK[r.k]||[]).push(r);used.add(r.g)}});
+  let placed=0,left=0;const order=v=>rua(v)===5?1000-v:v;
+  Object.keys(byK).forEach(k=>{byK[k].sort((a,b)=>(a.onda||9)-(b.onda||9)||a.g.localeCompare(b.g,"pt",{numeric:true}));
+    const vs=Object.keys(map).map(Number).filter(v=>map[v]===k&&!res[v]).sort((a,b)=>rua(a)-rua(b)||order(a)-order(b));
+    byK[k].forEach((r,i)=>{if(vs[i]){res[vs[i]]=r.g;placed++}else left++})});
+  return {tags:res,placed,left};
+}
+
+/* ============ LEITURA LOCAL (grátis, sem IA) ============ */
+const LR_EXP={1:16,2:17,3:31,4:9,5:23};
+const LR_NUMS={1:[...Array(16)].map((_,i)=>1+2*i),2:[...Array(17)].map((_,i)=>2+2*i),3:[...Array(31)].map((_,i)=>35+i),4:[...Array(9)].map((_,i)=>89+i),5:[...Array(23)].map((_,i)=>88-i)};
+const LR_CLICKS=[[1,1,"vaga 1 (Rua 1, a primeira de cima)"],[1,31,"vaga 31 (Rua 1, a última de baixo)"],[2,2,"vaga 2 (Rua 2, a primeira de cima)"],[2,34,"vaga 34 (Rua 2, a última de baixo)"],
+  [3,35,"vaga 35 (Rua 3, a primeira da esquerda)"],[3,65,"vaga 65 (Rua 3, a última da direita)"],[5,88,"vaga 88 (Rua 5, a primeira da esquerda)"],[5,66,"vaga 66 (Rua 5, a última da direita)"],
+  [4,89,"vaga 89 (Rua 4, a primeira de cima)"],[4,97,"vaga 97 (Rua 4, a última de baixo)"]];
+const LR_PAL={X:[[255,0,0],[237,28,36],[230,40,40]],HW:[[0,32,96],[31,56,100],[0,51,102],[22,53,122]],OT:[[255,255,0],[255,242,0]],DC:[[0,255,255],[0,204,255],[0,176,240],[34,230,234]],
+  CM:[[0,255,0],[146,208,80],[0,176,80],[34,224,36]],DL:[[84,130,53],[56,87,35],[112,173,71],[79,122,46]],KG:[[255,153,0],[255,192,0],[237,125,49],[243,146,0]],MS:[[128,128,128],[166,166,166],[118,118,118],[138,138,138]],
+  EC:[[255,242,204],[252,228,214],[255,230,153],[246,226,192]],ME:[[248,203,173],[244,176,132],[244,199,173]],PY:[[191,143,0],[184,134,11]],PL:[[112,48,160],[123,94,167]],PC:[[255,255,255],[242,242,242]]};
+function lrImageData(img){
+  const MAXW=1600,MAXH=900;
+  const k=Math.min(1,MAXW/img.naturalWidth,MAXH/img.naturalHeight);
+  const c=document.createElement("canvas");
+  c.width=Math.max(1,Math.round(img.naturalWidth*k));c.height=Math.max(1,Math.round(img.naturalHeight*k));
+  const g=c.getContext("2d",{willReadFrequently:true});g.drawImage(img,0,0,c.width,c.height);
+  return g.getImageData(0,0,c.width,c.height)
+}
+function lrPx(D,x,y){x=Math.round(x);y=Math.round(y);if(x<0||y<0||x>=D.width||y>=D.height)return null;const i=(y*D.width+x)*4;return [D.data[i],D.data[i+1],D.data[i+2]]}
+const lrDark=p=>{const mx=Math.max(...p),mn=Math.min(...p);return mx<110&&mx-mn<70};
+function lrSeps(D,a,u,pp,d,s0,s1){const out=[];let st=-1;const ts=[];for(let t=s0;t<s1;t+=0.5)ts.push(t);
+  const prof=ts.map(t=>{const p=lrPx(D,a[0]+u[0]*t+pp[0]*d,a[1]+u[1]*t+pp[1]*d);return p?lrDark(p):false});
+  for(let i=0;i<=prof.length;i++){const v=i<prof.length&&prof[i];if(v&&st<0)st=i;if(!v&&st>=0){if((i-st)*0.5<=4)out.push(ts[Math.floor((st+i-1)/2)]);st=-1}}
+  return out}
+function lrCenters(D,a,b,n){const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy)||1,u=[dx/L,dy/L],pp=[-u[1],u[0]],pitch=L/(n-1);
+  const toCells=sp=>{let c=[];for(let i=0;i+1<sp.length;i++)if(sp[i+1]-sp[i]>=pitch*0.35)c.push([sp[i],sp[i+1]]);return c.filter(x=>{const m=(x[0]+x[1])/2;return m>=-pitch*0.5&&m<=L+pitch*0.5})};
+  const aligned=cs=>Math.abs(cs[0])+Math.abs(cs[cs.length-1]-L)<pitch*0.9;
+  const fit=cells=>{cells=cells.map(c=>[...c]);let guard=0;
+    while(cells.length<n&&guard++<40){let wi=0;cells.forEach((c,i)=>{if(c[1]-c[0]>cells[wi][1]-cells[wi][0])wi=i});const c=cells[wi],m=(c[0]+c[1])/2;cells.splice(wi,1,[c[0],m],[m,c[1]])}
+    while(cells.length>n&&guard++<80){let ni=0;cells.forEach((c,i)=>{if(c[1]-c[0]<cells[ni][1]-cells[ni][0])ni=i});const j=ni+1<cells.length?ni+1:ni-1;const lo=Math.min(ni,j);cells.splice(lo,2,[cells[lo][0],cells[lo+1][1]])}
+    return cells};
+  const ds=[0];for(let i=1;i<=60;i++){ds.push(i,-i)}
+  const cand=[];
+  for(const d of ds){const sp=lrSeps(D,a,u,pp,d,-pitch*0.8,L+pitch*0.8);const cells=toCells(sp);
+    if(cells.length===n){const cs=cells.map(c=>(c[0]+c[1])/2);if(aligned(cs))return {pts:cs.map(t=>[a[0]+u[0]*t,a[1]+u[1]*t]),pitch,how:"sep"}}
+    if(Math.abs(cells.length-n)<=3)cand.push({d,sp,cells})}
+  if(cand.length){cand.sort((x,y)=>Math.abs(x.cells.length-n)-Math.abs(y.cells.length-n)||Math.abs(x.d)-Math.abs(y.d));const bd=cand[0].d;
+    let all=[];cand.filter(c=>Math.abs(c.d-bd)<=5).forEach(c=>all.push(...c.sp));all.sort((x,y)=>x-y);const merged=[];all.forEach(t=>{if(merged.length&&t-merged[merged.length-1]<2.5)return;merged.push(t)});
+    const cells=fit(toCells(merged));if(cells.length===n){const cs=cells.map(c=>(c[0]+c[1])/2);if(aligned(cs))return {pts:cs.map(t=>[a[0]+u[0]*t,a[1]+u[1]*t]),pitch,how:"fit"}}}
+  return {pts:[...Array(n)].map((_,i)=>[a[0]+u[0]*i*pitch,a[1]+u[1]*i*pitch]),pitch,how:"lin"}}
+function lrClassify(D,c,r){const cnt={},sum={};let dark=0,tot=0;
+  for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){const p=lrPx(D,c[0]+x,c[1]+y);if(!p)continue;tot++;const mx=Math.max(...p),mn=Math.min(...p);if(mx<95&&mx-mn<60){dark++;continue}
+    const k=(p[0]/24|0)+"_"+(p[1]/24|0)+"_"+(p[2]/24|0);cnt[k]=(cnt[k]||0)+1;const s=sum[k]||(sum[k]=[0,0,0]);s[0]+=p[0];s[1]+=p[1];s[2]+=p[2]}
+  if(!tot)return {k:"V",d:999};if(dark/tot>0.6)return {k:"AL",d:0};
+  const top=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0];if(!top)return {k:"AL",d:0};const s=sum[top],n=cnt[top],col=[s[0]/n,s[1]/n,s[2]/n];
+  let best="V",bd=1e9;Object.entries(LR_PAL).forEach(([k,cs])=>cs.forEach(cc=>{const d=Math.hypot(cc[0]-col[0],cc[1]-col[1],cc[2]-col[2]);if(d<bd){bd=d;best=k}}));return {k:best,d:bd,col}}
+function lrFrame(D){const W=D.width,H=D.height;const rowC=new Array(H).fill(0),colC=new Array(W).fill(0);
+  for(let y=0;y<H;y+=1)for(let x=0;x<W;x+=1){const i=(y*W+x)*4;const r=D.data[i],g=D.data[i+1],b=D.data[i+2];const mx=Math.max(r,g,b),mn=Math.min(r,g,b);if(mx<110&&mx-mn<70){rowC[y]++;colC[x]++}}
+  const rows=[],cols=[];rowC.forEach((c,y)=>{if(c>W*0.55)rows.push(y)});colC.forEach((c,x)=>{if(c>H*0.55)cols.push(x)});
+  if(rows.length<2||cols.length<2)return {x:0,y:0,w:W,h:H,ok:false};const y0=Math.min(...rows),y1=Math.max(...rows),x0=Math.min(...cols),x1=Math.max(...cols);
+  if(y1-y0<H*0.3||x1-x0<W*0.3)return {x:0,y:0,w:W,h:H,ok:false};return {x:x0,y:y0,w:x1-x0,h:y1-y0,ok:true}}
+function lrBuildTemplate(D,clicks){const F=lrFrame(D);const pts={};let pitchs={};
+  [1,2,3,4,5].forEach(r=>{const a=clicks.find(c=>c.r===r&&c.first),b=clicks.find(c=>c.r===r&&!c.first);if(!a||!b)return;const res=lrCenters(D,[a.x,a.y],[b.x,b.y],LR_EXP[r]);
+    LR_NUMS[r].forEach((v,i)=>{pts[v]=[(res.pts[i][0]-F.x)/F.w,(res.pts[i][1]-F.y)/F.h]});pitchs[r]=res.pitch/F.w});
+  return {pts,pitchs,frameOk:F.ok}}
+function lrRead(D,tpl){const F=lrFrame(D);const vagas={},duvidas=[],marks=[];
+  Object.entries(tpl.pts).forEach(([v,p])=>{v=+v;const r=rua(v);const x=F.x+p[0]*F.w,y=F.y+p[1]*F.h;const rad=Math.max(3,Math.round((tpl.pitchs[r]||0.01)*F.w*0.36));
+    const c=lrClassify(D,[x,y],rad);let k=c.k==="V"?"V":c.k;vagas[v]=k;if(c.d>70)duvidas.push(v);marks.push({v,x,y,k,doubt:c.d>70})});
+  return {vagas,gaiolas:{},duvidas,marks,frameOk:F.ok}}
+
+/* Leitura automática para o desenho padrão SVC: usa a geometria do próprio formulário,
+   normalizada pela largura/altura da imagem. Não depende de IA, API ou calibração manual. */
+const LR_REF_W=1600,LR_REF_H=604;
+const LR_AUTO={
+  1:{a:[161,182],b:[161,423],nums:LR_NUMS[1]},
+  2:{a:[248,182],b:[248,439],nums:LR_NUMS[2]},
+  3:{a:[351,160],b:[1245,160],nums:LR_NUMS[3]},
+  4:{a:[1420,308],b:[1420,438],nums:LR_NUMS[4]},
+  5:{a:[379,507],b:[1090,507],nums:LR_NUMS[5]}
+};
+function lrAutoRead(D){
+  const sx=D.width/LR_REF_W,sy=D.height/LR_REF_H,aspect=D.width/D.height;
+  if(aspect<2.35||aspect>2.95)throw {code:'layout_shape'};
+  const vagas={},duvidas=[],marks=[];let score=0,read=0;
+  Object.entries(LR_AUTO).forEach(([rr,z])=>{const n=z.nums.length;
+    z.nums.forEach((v,i)=>{const t=n===1?0:i/(n-1);const x=(z.a[0]+(z.b[0]-z.a[0])*t)*sx,y=(z.a[1]+(z.b[1]-z.a[1])*t)*sy;
+      const rad=Math.max(3,Math.round(Math.min(sx,sy)*5));const c=lrClassify(D,[x,y],rad);
+      vagas[v]=c.k;read++;score+=Math.min(c.d||0,120);if(c.d>82)duvidas.push(v);marks.push({v,x,y,k:c.k,doubt:c.d>82});
+    });
+  });
+  const pc=Object.values(vagas).filter(k=>k==='PC').length;const avg=score/Math.max(1,read);
+  // proteção contra o erro antigo: se quase tudo virar branco/PC, não deixa aplicar.
+  if(pc>55||avg>92)throw {code:'layout_invalid'};
+  return {vagas,gaiolas:{},duvidas,marks,frameOk:true,avg};
+}
+
+/* Leitura pela moldura: para prints com título/margem (ex.: "LAYOUT DO SVC - AM" inteiro).
+   Acha o retângulo grande do desenho e posiciona as 5 ruas em relação a ele. */
+const LR_FRAME={1:{a:[.0943,.2085],b:[.0943,.6868]},2:{a:[.1824,.2077],b:[.1824,.7183]},3:{a:[.2458,.1634],b:[.7511,.1634]},4:{a:[.9233,.4637],b:[.9233,.7175]},5:{a:[.263,.844],b:[.6463,.844]}};
+// posição de cada vaga ao longo da rua, medida no desenho padrão (as colunas não têm a mesma largura)
+const LR_FRAME_T={"1":[0.0,0.066,0.1325,0.1985,0.2654,0.3332,0.3996,0.4652,0.5357,0.6048,0.6704,0.7368,0.802,0.8689,0.9358,1.0],"2":[0.0,0.0624,0.1248,0.1873,0.2497,0.3121,0.3745,0.4369,0.4994,0.5618,0.6242,0.6866,0.7513,0.8129,0.8753,0.9376,1.0],"3":[0.0,0.0342,0.0688,0.1035,0.137,0.1717,0.2061,0.2405,0.2732,0.3057,0.3401,0.3765,0.4145,0.4513,0.4852,0.5181,0.551,0.5854,0.6218,0.6588,0.6941,0.7255,0.758,0.7922,0.8264,0.8575,0.886,0.9145,0.943,0.9715,1.0],"4":[0.0,0.1266,0.2506,0.3764,0.4987,0.6245,0.7502,0.8743,1.0],"5":[0.0,0.0446,0.0909,0.1375,0.1829,0.2275,0.2726,0.3158,0.3586,0.4038,0.4521,0.5036,0.5519,0.5956,0.6385,0.6813,0.7276,0.7762,0.8246,0.8697,0.9114,0.9554,1.0]};
+function lrFrame2(D){const W=D.width,H=D.height;
+  for(const th of [110,170]){const rowC=new Array(H).fill(0),colC=new Array(W).fill(0);
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=(y*W+x)*4;const r=D.data[i],g=D.data[i+1],b=D.data[i+2];const mx=Math.max(r,g,b),mn=Math.min(r,g,b);if(mx<th&&mx-mn<55){rowC[y]++;colC[x]++}}
+    const rows=[],cols=[];rowC.forEach((c,y)=>{if(c>W*0.55)rows.push(y)});colC.forEach((c,x)=>{if(c>H*0.55)cols.push(x)});
+    if(rows.length<2||cols.length<2)continue;const y0=Math.min(...rows),y1=Math.max(...rows),x0=Math.min(...cols),x1=Math.max(...cols);
+    if(y1-y0<H*0.3||x1-x0<W*0.3)continue;const ar=(x1-x0)/(y1-y0);if(ar<1.4||ar>2.6)continue;
+    return {x:x0,y:y0,w:x1-x0,h:y1-y0,ok:true}}
+  return {ok:false}}
+// divisória = linha escura que atravessa a altura da vaga (texto não atravessa)
+function lrSepsStrong(D,a,u,pp,s0,s1,half){const out=[];let st=-1,t0=0;const ts=[],prof=[];
+  for(let t=s0;t<s1;t+=0.5){let dk=0,tot=0;for(let q=-half;q<=half;q++){const p=lrPx(D,a[0]+u[0]*t+pp[0]*q,a[1]+u[1]*t+pp[1]*q);if(!p)continue;tot++;if(lrDark(p))dk++}ts.push(t);prof.push(tot>0&&dk/tot>=0.72)}
+  for(let i=0;i<=prof.length;i++){const v=i<prof.length&&prof[i];if(v&&st<0)st=i;if(!v&&st>=0){out.push({t:(ts[st]+ts[i-1])/2,len:(i-st)*0.5});st=-1}}
+  return out}
+function lrCentersStrong(D,a,b,n,tpl){const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy)||1,u=[dx/L,dy/L],pp=[-u[1],u[0]],pitch=L/(n-1);
+  const half=Math.max(2,Math.round(pitch*0.3));let cand=null;
+  for(const d of [0,-1,1,-2,2,-3,3]){const off=d*Math.max(1,pitch*0.08),a2=[a[0]+pp[0]*off,a[1]+pp[1]*off];
+    const sp=lrSepsStrong(D,a2,u,pp,-pitch*1.3,L+pitch*1.3,half).filter(x=>x.len<=pitch*0.35).map(x=>x.t);if(sp.length<3)continue;
+    const good=[];for(let k=0;k+1<sp.length;k++){const g=sp[k+1]-sp[k];if(g>=pitch*0.6&&g<=pitch*1.5)good.push(g)}
+    const pe=good.length?good.sort((x,y)=>x-y)[Math.floor(good.length/2)]:pitch;
+    // divisórias que sumiram entre vagas da mesma cor: completa pelo passo medido
+    const chains=[];let B=[sp[0]];
+    for(let k=0;k+1<sp.length;k++){const g=sp[k+1]-sp[k];const m=Math.round(g/pe);
+      if(g<pe*0.45)continue;
+      if(m>=1&&m<=6){for(let q=1;q<m;q++)B.push(sp[k]+g*q/m);B.push(sp[k+1])}else{if(B.length>1)chains.push(B);B=[sp[k+1]]}}
+    if(B.length>1)chains.push(B);
+    chains.forEach(Bc=>{let cs=[];for(let k=0;k+1<Bc.length;k++)cs.push((Bc[k]+Bc[k+1])/2);
+      if(cs.length<n){const miss=n-cs.length;const endGap=L-cs[cs.length-1],startGap=cs[0];
+        // vagas sem divisória visível no fim/começo: reparte o espaço até a ponta esperada da rua
+        if(endGap>=startGap){const st=Math.max(pe*0.6,Math.min(pe*1.3,endGap/miss));for(let q=0;q<miss;q++)cs.push(cs[cs.length-1]+st)}
+        else{const st=Math.max(pe*0.6,Math.min(pe*1.3,startGap/miss));for(let q=0;q<miss;q++)cs.unshift(cs[0]-st)}}
+      for(let s0=0;s0+n<=cs.length;s0++){const w=cs.slice(s0,s0+n);const err=Math.abs(w[0])+Math.abs(w[n-1]-L);
+        if(err<pitch*1.0&&(!cand||err<cand.err))cand={err,pts:w.map(t=>[a2[0]+u[0]*t,a2[1]+u[1]*t])}}})}
+  const okTpl=pts=>!tpl||tpl.length!==n||pts.every((q,i)=>Math.abs(((q[0]-a[0])*u[0]+(q[1]-a[1])*u[1])-tpl[i]*L)<pitch*0.45);
+  if(cand&&okTpl(cand.pts))return {pts:cand.pts,pitch,how:"strong"};
+  const r0=lrCenters(D,a,b,n);if((r0.how==="sep"&&okTpl(r0.pts))||!tpl||tpl.length!==n)return r0;
+  return {pts:tpl.map(t=>[a[0]+u[0]*t*L,a[1]+u[1]*t*L]),pitch,how:"tpl"}}
+// lê a cor pelos 4 cantos da vaga (longe da sigla escrita no meio)
+function lrClassifyCell(D,c,pitch){const cnt={},sum={};let dark=0,tot=0;const o=pitch*0.3,r=Math.max(1,Math.round(pitch*0.09));
+  [[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx,sy])=>{const cx=c[0]+sx*o,cy=c[1]+sy*o;
+    for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){const p=lrPx(D,cx+x,cy+y);if(!p)continue;tot++;const mx=Math.max(...p),mn=Math.min(...p);
+      if(mx<80&&mx-mn<35){dark++;continue}const k=(p[0]/24|0)+"_"+(p[1]/24|0)+"_"+(p[2]/24|0);cnt[k]=(cnt[k]||0)+1;const s=sum[k]||(sum[k]=[0,0,0]);s[0]+=p[0];s[1]+=p[1];s[2]+=p[2]}});
+  if(!tot)return {k:"V",d:999};if(dark/tot>0.5)return {k:"AL",d:0};
+  const top=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0];if(!top)return {k:"AL",d:0};const s=sum[top],n=cnt[top],col=[s[0]/n,s[1]/n,s[2]/n];
+  let best="V",bd=1e9;Object.entries(LR_PAL).forEach(([k,cs])=>cs.forEach(cc=>{const d=Math.hypot(cc[0]-col[0],cc[1]-col[1],cc[2]-col[2]);if(d<bd){bd=d;best=k}}));return {k:best,d:bd,col}}
+function lrDarkRatio(D,c,r){let dk=0,tot=0;for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){const p=lrPx(D,c[0]+x,c[1]+y);if(!p)continue;tot++;if(lrDark(p))dk++}return tot?dk/tot:0}
+function lrFrameRead(D){const F=lrFrame2(D);if(!F.ok)throw {code:'layout_shape'};
+  const vagas={},duvidas=[],marks=[];let score=0,read=0;
+  Object.entries(LR_FRAME).forEach(([r,z])=>{const nums=LR_NUMS[r],n=nums.length;
+    const a=[F.x+z.a[0]*F.w,F.y+z.a[1]*F.h],b=[F.x+z.b[0]*F.w,F.y+z.b[1]*F.h];
+    const res=lrCentersStrong(D,a,b,n,LR_FRAME_T[r]);const rad=Math.max(2,Math.round(res.pitch*0.26));
+    nums.forEach((v,i)=>{const [x,y]=res.pts[i];const c=lrClassifyCell(D,[x,y],res.pitch);vagas[v]=c.k;read++;score+=Math.min(c.d||0,120);
+      if(c.d>82)duvidas.push(v);marks.push({v,x,y,k:c.k,doubt:c.d>82})})});
+  const pc=Object.values(vagas).filter(k=>k==='PC').length;const avg=score/Math.max(1,read);
+  if(pc>55||avg>92)throw {code:'layout_invalid'};
+  return {vagas,gaiolas:{},duvidas,marks,frameOk:true,avg}}
+function lrReadAny(D){let first;try{return lrAutoRead(D)}catch(e){first=e}
+  try{return lrFrameRead(D)}catch(e){throw first&&first.code==='layout_invalid'?first:e}}
+
+const API_MODEL_DEF="claude-sonnet-5-5";
+async function fileToB64(f){const url=URL.createObjectURL(f);try{const im=await new Promise((r,j)=>{const m=new Image();m.onload=()=>r(m);m.onerror=j;m.src=url});
+  const mx=2400,k=Math.min(1,mx/Math.max(im.naturalWidth,im.naturalHeight));const c=document.createElement("canvas");c.width=Math.round(im.naturalWidth*k);c.height=Math.round(im.naturalHeight*k);
+  const g=c.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,c.width,c.height);g.drawImage(im,0,0,c.width,c.height);return c.toDataURL("image/png").split(",")[1]}finally{URL.revokeObjectURL(url)}}
+async function apiRead(files,key,model,signal){
+  const content=[];for(const f of files)content.push({type:"image",source:{type:"base64",media_type:"image/png",data:await fileToB64(f)}});
+  content.push({type:"text",text:READ_PROMPT});
+  const r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",signal,headers:{"x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+    body:JSON.stringify({model:model||API_MODEL_DEF,max_tokens:6000,messages:[{role:"user",content}]})});
+  const j=await r.json().catch(()=>null);
+  if(!r.ok){const m=j?.error?.message||("HTTP "+r.status);throw {code:r.status===401?"api_key":r.status===404||/model/i.test(m)?"api_model":r.status===429?"rate_limited":"api",message:m}}
+  const t=(j?.content||[]).map(c=>c.text||"").join("");const a=t.indexOf("{"),b=t.lastIndexOf("}");if(a<0||b<a)throw {code:"invalid_json"};
+  return JSON.parse(t.slice(a,b+1))}
+function ReadModal({cur,onClose,onApply}){
+  const [files,setFiles]=useState([]);const [busy,setBusy]=useState(false);const [err,setErr]=useState("");const [res,setRes]=useState(null);
+  const [target,setTarget]=useState(cur);const [dist,setDist]=useState(true);const [avail,setAvail]=useState(null);const ctl=useRef(null);
+  const thumbs=useMemo(()=>files.map(f=>URL.createObjectURL(f)),[files]);
+  useEffect(()=>()=>thumbs.forEach(u=>URL.revokeObjectURL(u)),[thumbs]);
+  const [key,setKeyRaw]=useState(()=>{try{return localStorage.getItem("svc-anth-key")||""}catch(e){return ""}});
+  const [model,setModelRaw]=useState(()=>{try{return localStorage.getItem("svc-anth-model")||API_MODEL_DEF}catch(e){return API_MODEL_DEF}});
+  const setKey=v=>{setKeyRaw(v);try{localStorage.setItem("svc-anth-key",v)}catch(e){}};const setModel=v=>{setModelRaw(v);try{localStorage.setItem("svc-anth-model",v)}catch(e){}};
+  const [cfgOpen,setCfgOpen]=useState(false);
+  useEffect(()=>{let ok=true;(async()=>{try{const s=window.claude?.use?await window.claude.use("sample"):null;if(!s){ok&&setAvail(false);return}
+      const lim=await s.limits().catch(()=>null);ok&&setAvail(!!lim?.images)}catch(e){ok&&setAvail(false)}})();return()=>{ok=false}},[]);
+  const [engine,setEngine]=useState("local");
+  const useApi=engine==="api";const canRead=engine==="claude"||(useApi&&key.trim().length>20);
+  // ---- leitura local (grátis)
+  const [li,setLi]=useState(null);const [calib,setCalib]=useState(null);const [tplVer,setTplVer]=useState(0);
+  const tplKey="svc-tpl-"+target;const tpl=useMemo(()=>{try{return JSON.parse(localStorage.getItem(tplKey)||"null")}catch(e){return null}},[tplKey,tplVer]);
+  useEffect(()=>{if(!files[0]){setLi(null);return}let ok=true;const u=URL.createObjectURL(files[0]);const im=new Image();
+    im.onload=()=>{if(!ok)return;try{setLi({url:u,w:im.naturalWidth,h:im.naturalHeight,D:lrImageData(im)})}catch(e){setErr("Não consegui abrir essa imagem.")}};im.src=u;return()=>{ok=false;URL.revokeObjectURL(u)}},[files[0]]);
+  const localRead=()=>{if(!li)return;setErr("");try{
+    const r=lrReadAny(li.D);
+    const detected=detectLayoutCycleFromDrawing(r.vagas);
+    if(detected)setTarget(detected);
+    setRes({vagas:r.vagas,gaiolas:{},duvidas:r.duvidas,titulo:detected?"Ciclo "+detected+" reconhecido pelo desenho":"Leitura automática local",ciclo:detected||null,marks:r.marks,local:true})
+  }catch(e){setRes(null);setErr(e?.code==="layout_shape"?"A imagem não está no formato do layout SVC completo. Envie o print inteiro, sem cortar as laterais.":"Leitura inválida — não apliquei nada. O desenho não alinhou com as vagas. Envie o print completo e reto.")}};
+  const imgClick=e=>{if(!calib||!li)return;const rc=e.currentTarget.getBoundingClientRect();const x=(e.clientX-rc.left)/rc.width*li.w,y=(e.clientY-rc.top)/rc.height*li.h;
+    const step=LR_CLICKS[calib.length];const nc=[...calib,{r:step[0],v:step[1],first:calib.length%2===0,x,y}];
+    if(nc.length<LR_CLICKS.length){setCalib(nc);return}
+    const T=lrBuildTemplate(li.D,nc);try{localStorage.setItem(tplKey,JSON.stringify(T))}catch(e){}setCalib(null);setTplVer(v=>v+1);localRead(T)};
+  useEffect(()=>{const onP=e=>{const fs=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith("image/"));if(fs.length){e.preventDefault();setFiles(p=>[...p,...fs].slice(0,4));setRes(null)}};
+    window.addEventListener("paste",onP);return()=>window.removeEventListener("paste",onP)},[]);
+  const add=list=>{const fs=[...list].filter(f=>f.type.startsWith("image/"));if(fs.length){setFiles(p=>[...p,...fs].slice(0,4));setRes(null);setErr("")}};
+  const read=async()=>{setErr("");setBusy(true);setRes(null);ctl.current=new AbortController();
+    try{let out;if(useApi){out=await apiRead(files,key.trim(),model.trim(),ctl.current.signal)}else{const s=await window.claude.use("sample");
+      out=await s.json(READ_PROMPT,{images:files,modelTier:"complex",signal:ctl.current.signal,cache:false})}
+      const vagas={},gaiolas={};let n=0;
+      Object.entries(out?.vagas||{}).forEach(([v,k])=>{v=+v;k=String(k||"").toUpperCase().trim();if(v>=1&&v<=97){vagas[v]=CARRIERS[k]&&k!=="V"?k:"V";n++}});
+      Object.entries(out?.gaiolas||{}).forEach(([v,t])=>{v=+v;t=String(t||"").trim().toUpperCase();if(v>=1&&v<=97&&t)gaiolas[v]=t});
+      if(!n)throw {code:"empty"};
+      const cic=LAYOUTS[out?.ciclo]?out.ciclo:null;if(cic)setTarget(cic);
+      setRes({vagas,gaiolas,duvidas:(out?.duvidas||[]).map(Number).filter(x=>x>=1&&x<=97),titulo:out?.titulo||"",ciclo:cic})}
+    catch(e){const c=e&&(e.name==="AbortError"?"cancelled":e.code);setErr(c==="api_key"?"A chave da API não foi aceita. Confira se copiou inteira (começa com sk-ant-).":c==="api_model"?"O modelo não foi aceito ("+(e.message||"")+"). Troque o nome do modelo nas configurações.":c==="api"?"A API respondeu com erro: "+(e.message||""):c==="cancelled"?"Leitura cancelada.":c==="not_granted"||c==="sampling_disabled"?"A leitura pelo Claude não foi liberada nesta página.":c==="rate_limited"?"Muitas leituras seguidas ou limite de uso atingido. Tente de novo daqui a pouco.":c==="image_rejected"?"Essa imagem não foi aceita. Tente um print PNG ou JPG.":c==="invalid_json"||c==="empty"?"Não consegui entender o desenho. Tente um print mais nítido, só da área do layout.":"Não deu para ler agora. Tente de novo.")}
+    finally{setBusy(false)}};
+  const planC=(()=>{let src=null;try{src=JSON.parse(localStorage.getItem("svc-plan2")||"null")}catch(e){}if(src&&src.empty)return null;if(!src||!src.rows)src=parseDefault();return src&&src.map?detectCiclo(src.title||"",src.rows,src.map):null})();
+  const counts=res?(()=>{const c={};Object.values(res.vagas).forEach(k=>c[k]=(c[k]||0)+1);return c})():{};
+  const box="glass rounded-3xl p-4 sm:p-5 w-full max-w-4xl max-h-[92vh] overflow-auto flex flex-col gap-3";
+  return html`<${motion.div} class="fixed inset-0 z-[200] flex items-center justify-center p-4" initial=${{opacity:0}} animate=${{opacity:1}} exit=${{opacity:0}} style=${{background:"rgba(3,5,8,.72)",backdropFilter:"blur(6px)"}} onClick=${()=>{if(!busy)onClose()}}>
+    <${motion.div} onClick=${e=>e.stopPropagation()} initial=${{y:24}} animate=${{y:0}} exit=${{y:24,opacity:0}} transition=${spring} class=${box} style=${{background:"rgba(16,20,26,.97)"}}>
+      <div class="flex items-center justify-between gap-3"><div><div class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold">Ler desenho do layout</div><div class="font-display text-lg">Mande o print e o app monta o layout</div></div>
+        <button type="button" onClick=${onClose} disabled=${busy} class="text-muted hover:text-ink text-sm px-3 py-1.5 rounded-full border border-white/15">Fechar</button></div>
+      ${false&&engine&&!res&&html`<div class="flex flex-wrap items-center gap-2 text-xs">
+        <span class="text-muted">Como ler:</span>
+        ${[["local","Grátis (no aparelho)"],...(avail?[["claude","Claude"]]:[]),["api","API Anthropic (paga)"]].map(([id,t])=>html`<button key=${id} type="button" id=${"eng-"+id} onClick=${()=>setEngine(id)} class=${"px-3 py-1.5 rounded-full font-semibold "+(engine===id?"bg-white text-black":"border border-white/15 text-muted hover:text-ink")}>${t}</button>`)}
+      </div>`}
+      ${useApi&&html`<div class="rounded-2xl px-3 py-3 text-sm flex flex-col gap-2" style=${{background:key?"rgba(52,211,153,.08)":"rgba(255,181,71,.1)",color:key?"#5ee6b0":"var(--amber)"}}>
+        <div>${key?"Leitura pela API da Anthropic (chave salva neste navegador).":"Fora do Claude (arquivo ou GitHub) a leitura usa a API da Anthropic. Cole sua chave uma vez: ela fica salva só neste navegador."}
+          <button type="button" onClick=${()=>setCfgOpen(!cfgOpen)} class="underline underline-offset-2 ml-1 text-ink">${key?(cfgOpen?"fechar":"trocar chave"):""}</button></div>
+        ${(!key||cfgOpen)&&html`<div class="flex flex-col gap-2 text-ink">
+          <label for="anthKey" class="text-xs text-muted">Chave da API (crie em console.anthropic.com › API Keys › Create Key; começa com sk-ant-)</label>
+          <input id="anthKey" type="password" value=${key} onInput=${e=>setKey(e.target.value.trim())} placeholder="sk-ant-..." autocomplete="off" class="bg-white/5 border border-line rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-[var(--accent)]"/>
+          <label for="anthModel" class="text-xs text-muted">Modelo</label>
+          <input id="anthModel" value=${model} onInput=${e=>setModel(e.target.value)} class="bg-white/5 border border-line rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-[var(--accent)]"/>
+          <p class="text-[11px] text-muted">A chave é sua: cada leitura custa alguns centavos na sua conta da Anthropic. Não compartilhe este navegador com a chave salva.</p>
+        </div>`}
+      </div>`}
+      ${!res&&html`<div class="rounded-2xl border border-dashed border-white/20 p-4 flex flex-col sm:flex-row sm:items-center gap-3" onDragOver=${e=>e.preventDefault()} onDrop=${e=>{e.preventDefault();add(e.dataTransfer.files)}}>
+        <div class="flex-1 text-sm"><div class="font-semibold">Arraste o print, cole com Ctrl+V ou escolha o arquivo</div><div class="text-muted text-xs mt-1">Até 4 imagens. Se o layout for muito largo, mande em 2 partes (esquerda e direita) para as gaiolas ficarem legíveis.</div></div>
+        <label for="readFile" class="cursor-pointer text-sm font-semibold px-4 py-2 rounded-full bg-white text-black text-center">Escolher imagem</label>
+        <input id="readFile" type="file" accept="image/png,image/jpeg,image/webp" multiple class="sr-only" onChange=${e=>{add(e.target.files);e.target.value=""}}/>
+      </div>`}
+      ${engine==="local"&&!res&&files.length>0&&html`<div class="flex flex-col gap-3">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          <span class="font-semibold">Ciclo automático pelo desenho</span>
+          <span class="text-xs" style=${{color:"#5ee6b0"}}>AM · PM · SD · AM0-CHP</span>
+          <span class="text-xs text-muted">O app compara as vagas e transportadoras da imagem e abre o layout correspondente.</span>
+        </div>
+        ${false&&calib&&html`<div class="rounded-2xl px-3 py-2.5 text-sm font-semibold" style=${{background:"rgba(76,195,255,.12)",color:"var(--accent)"}}>
+          ${calib.length+1}/10 · Clique no centro da ${LR_CLICKS[calib.length][2]}
+          <button type="button" onClick=${()=>setCalib(calib.slice(0,-1))} disabled=${!calib.length} class="ml-3 text-xs underline text-ink">voltar um</button>
+          <button type="button" onClick=${()=>setCalib(null)} class="ml-2 text-xs underline text-muted">cancelar</button></div>`}
+        ${li&&html`<div class="relative w-full rounded-xl overflow-hidden bg-white select-none" style=${{cursor:"default"}}>
+          <img src=${li.url} alt="Desenho do layout" class="w-full h-auto block pointer-events-none"/>
+          ${[].map((c,i)=>html`<span key=${i} class="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-white pointer-events-none" style=${{left:(c.x/li.w*100)+"%",top:(c.y/li.h*100)+"%",background:"#e5262a"}}></span>`)}
+        </div>`}
+        <div class="flex flex-wrap items-center gap-2">
+          <${motion.button} ...${tactile} type="button" id="localRead" onClick=${()=>localRead()} disabled=${!li} class="text-sm font-semibold px-5 py-2.5 rounded-full" style=${{background:"var(--accent)",color:"#04121b"}}>Ler desenho grátis</${motion.button}>
+          <span class="text-xs text-muted">O app alinha as 5 ruas automaticamente e lê as cores das 97 vagas. Se o alinhamento falhar, ele bloqueia a aplicação.</span>
+        </div>
+      </div>`}
+      ${engine!=="local"&&files.length>0&&!res&&html`<div class="flex flex-wrap gap-2">${thumbs.map((u,i)=>html`<div key=${u} class="relative"><img src=${u} alt=${"Desenho "+(i+1)} class="h-24 rounded-xl border border-line bg-white"/>
+        <button type="button" onClick=${()=>setFiles(files.filter((_,j)=>j!==i))} class="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-black/80 text-xs" aria-label="Tirar imagem">×</button></div>`)}</div>`}
+      ${!res&&engine!=="local"&&html`<div class="flex flex-wrap items-center gap-2">
+        <${motion.button} ...${tactile} type="button" id="readBtn" disabled=${!files.length||busy||!canRead} onClick=${read} class=${"text-sm font-semibold px-5 py-2.5 rounded-full "+(files.length&&!busy&&canRead?"":"opacity-40")} style=${{background:"var(--accent)",color:"#04121b"}}>${busy?"Lendo o desenho…":"Ler desenho"}</${motion.button}>
+        ${busy&&html`<button type="button" onClick=${()=>ctl.current?.abort()} class="text-sm text-muted hover:text-ink">Parar</button><span class="text-xs text-muted">Pode levar até 1 minuto.</span>`}
+      </div>`}
+      ${busy&&html`<div class="sk h-2 w-full"></div>`}
+      ${err&&html`<p class="text-sm" style=${{color:"#ff8a8c"}}>${err}</p>`}
+      ${res&&html`<div class="flex flex-col gap-3">
+        <div class="flex flex-wrap gap-2 text-xs">
+          <span class="px-2.5 py-1 rounded-full" style=${{background:"rgba(52,211,153,.12)",color:"#5ee6b0"}}>${Object.keys(res.vagas).length} vagas lidas</span>
+          ${!res.local&&html`<span class="px-2.5 py-1 rounded-full" style=${{background:"rgba(52,211,153,.12)",color:"#5ee6b0"}}>${Object.keys(res.gaiolas).length} gaiolas lidas</span>`}${res.local&&html`<span class="px-2.5 py-1 rounded-full bg-white/[.06] text-muted">Gaiolas: vêm do planejamento (Organizar rotas)</span>`}
+          ${res.duvidas.length>0&&html`<span class="px-2.5 py-1 rounded-full" style=${{background:"rgba(255,181,71,.12)",color:"var(--amber)"}}>Conferir: vagas ${res.duvidas.join(", ")}</span>`}
+          ${res.titulo&&html`<span class="px-2.5 py-1 rounded-full bg-white/[.06] text-muted">${res.titulo}</span>`}
+        </div>
+        ${res.local&&li&&html`<div class="relative w-full rounded-xl overflow-hidden bg-white"><img src=${li.url} alt="Desenho lido" class="w-full h-auto block"/>
+          ${res.marks.map(m=>{const c=CARRIERS[m.k]||CARRIERS.V;return html`<span key=${m.v} title=${"Vaga "+m.v+": "+c.n} class="absolute -translate-x-1/2 -translate-y-1/2 rounded-full font-mono font-bold flex items-center justify-center pointer-events-none" style=${{left:(m.x/li.w*100)+"%",top:(m.y/li.h*100)+"%",width:"18px",height:"18px",fontSize:"8px",background:c.bg,color:c.fg,boxShadow:m.doubt?"0 0 0 2px #ffb547":"0 0 0 1.5px #fff,0 0 0 2.5px #000"}}>${m.v}</span>`})}
+        </div>
+        <p class="text-xs text-muted">Cada bolinha mostra onde o app leu a vaga. Se alguma cair fora do quadradinho, a imagem não está no padrão esperado e não deve ser aplicada.</p>`}
+        <div class="grid gap-1" style=${{gridTemplateColumns:"repeat(auto-fill,minmax(46px,1fr))"}}>
+          ${Array.from({length:97},(_,i)=>i+1).filter(v=>v!==33).map(v=>{const k=res.vagas[v]||"V";const c=CARRIERS[k];const dv=res.duvidas.includes(v);
+            return html`<div key=${v} title=${res.gaiolas[v]||""} class="rounded-md text-center leading-tight py-1" style=${{background:c.bg,color:c.fg,boxShadow:dv?"0 0 0 2px var(--amber)":"inset 0 0 0 1px rgba(0,0,0,.3)"}}>
+              <div class="font-mono text-[9px] opacity-80">${v}</div><div class="font-display text-[10px]">${k==="V"?"—":k}</div>${res.gaiolas[v]&&html`<div class="font-mono text-[8px] truncate px-0.5">${res.gaiolas[v]}</div>`}</div>`})}
+        </div>
+        <div class="flex flex-wrap gap-1">${Object.keys(CARRIERS).filter(k=>counts[k]).map(k=>html`<span key=${k} class="text-[11px] inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[.05]"><${Swatch} k=${k}/>${counts[k]}</span>`)}</div>
+        <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-line">
+          <label for="readTarget" class="text-sm">Aplicar no layout</label>
+          <select id="readTarget" value=${target} onChange=${e=>setTarget(e.target.value)} class="bg-white/5 border border-line rounded-lg px-2 py-1.5 text-sm text-ink">${Object.keys(LAYOUTS).map(k=>html`<option key=${k} value=${k}>${k}${res.ciclo===k?" (lido no desenho)":""}</option>`)}</select>
+          <label class="text-sm inline-flex items-center gap-2"><input id="readDist" type="checkbox" checked=${dist} onChange=${e=>setDist(e.target.checked)}/>Organizar as rotas do planejamento nas vagas sem gaiola</label>
+          ${dist&&planC&&planC!==target&&html`<span class="text-xs" style=${{color:"var(--amber)"}}>O planejamento carregado é do ciclo ${planC}.</span>`}
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <${motion.button} ...${tactile} type="button" id="applyRead" onClick=${()=>onApply(target,res,dist)} class="text-sm font-semibold px-5 py-2.5 rounded-full bg-white text-black">Colocar no layout ${target}</${motion.button}>
+          <button type="button" onClick=${()=>{setRes(null)}} class="text-sm text-muted hover:text-ink px-3">Ler de novo</button>
+        </div>
+      </div>`}
+    </${motion.div}>
+  </${motion.div}>`;
+}
+
+function Plant({cur,L,filter,sel,onPick,onEdit,onGeo,onTag,onZero,onApplyRead,onDistribute,onUndo,onReset,canUndo,edited}){
+  const wrap=useRef(null);const [fit,setFit]=useState(1);
+  const [edit,setEdit]=useState(false);const [mode,setMode]=useState("pick");const [pickV,setPickV]=useState(null);useEffect(()=>{setPickV(null)},[edit,mode,cur]);
+  const [drag,setDrag]=useState(null);const [over,setOver]=useState(null);const [msg,setMsg]=useState("");const [share,setShare]=useState(false);
+  const [live,setLive]=useState(null);const [tagEd,setTagEd]=useState(null);const [sharing,setSharing]=useState(false);const [reading,setReading]=useState(false);const [zeroAsk,setZeroAsk]=useState(false);
+  const dragRef=useRef(null);const overRef=useRef(null);const liveRef=useRef(null);
+  const G0=L.geo;const OG=ondaPorGaiola();const SUG=svcSugSet(cur);const ondasNoLayout=[...new Set(Object.values(L.tags).map(t=>OG[t]).filter(Boolean))].sort((a,b)=>a-b);
+  // aplica o arrasto "ao vivo" para a peça acompanhar o dedo
+  const G=useMemo(()=>{if(!live)return G0;const {kind,id,dx,dy}=live;const S={...G0.slots},B={...G0.blocks},T={...G0.tags},C={...G0.caps};
+    const mv=p=>({...p,x:p.x+dx,y:p.y+dy});
+    if(kind==="slot")S[id]=mv(S[id]);else if(kind==="block")B[id]=mv(B[id]);
+    else if(kind==="rua"){T[id]=mv(T[id]);if(C[id])C[id]=mv(C[id]);for(let v=1;v<=97;v++)if(rua(v)===+id)S[v]=mv(S[v])}
+    return {slots:S,blocks:B,tags:T,caps:C}},[G0,live]);
+  const {W:MW,H:MH}=geoBounds(G0);
+  useEffect(()=>{const el=wrap.current;if(!el)return;const ro=new ResizeObserver(()=>setFit(el.clientWidth/MW));ro.observe(el);return()=>ro.disconnect()},[MW]);
+  const scale=Math.min(1.1,Math.max(window.innerWidth<768?.5:.3,fit));
+  useEffect(()=>{if(!msg)return;const t=setTimeout(()=>setMsg(""),3200);return()=>clearTimeout(t)},[msg]);
+  const listen=(move,end)=>{const up=()=>{document.body.style.userSelect="";window.removeEventListener("pointermove",move);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);end()};
+    document.body.style.userSelect="none";window.addEventListener("pointermove",move);window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up)};
+  // modo trocar transportadora
+  const start=(e,k,from)=>{if(!edit)return;e.preventDefault();
+    if(mode==="move"&&from){return startMove(e,"slot",from)}
+    if(mode==="tag"){if(from){setTagEd({v:from,val:L.tags[from]||""})}return}
+    if(mode==="pick"){if(from)setPickV(pickV===from?null:from);return}
+    const d={k,from,x:e.clientX,y:e.clientY,sx:e.clientX,sy:e.clientY};dragRef.current=d;setDrag(d);
+    listen(ev=>{const nd={...dragRef.current,x:ev.clientX,y:ev.clientY};dragRef.current=nd;setDrag(nd);
+      const t=document.elementFromPoint(ev.clientX,ev.clientY)?.closest("[data-v]");const v=t?+t.dataset.v:null;overRef.current=v;setOver(v)},
+    ()=>{const dd=dragRef.current,to=overRef.current;dragRef.current=null;overRef.current=null;setDrag(null);setOver(null);
+      if(!dd||!to||to===dd.from)return;const nm={...L.map};
+      if(dd.from){const other=nm[to];nm[to]=dd.k;nm[dd.from]=other;onEdit(nm);setMsg(`${CARRIERS[dd.k].n} foi para a vaga ${to} (Rua ${rua(to)})`+(other&&other!==dd.k?` · ${CARRIERS[other].n} foi para a ${dd.from}`:""))}
+      else{const old=nm[to];nm[to]=dd.k;onEdit(nm);setMsg(`Vaga ${to} (Rua ${rua(to)}) agora é ${CARRIERS[dd.k].n}`+(old&&old!==dd.k?` · antes era ${CARRIERS[old].n}`:""))}})};
+  // modo mover no desenho
+  const startMove=(e,kind,id)=>{if(!edit||mode!=="move")return;e.preventDefault();e.stopPropagation();
+    const sx=e.clientX,sy=e.clientY;const l={kind,id,dx:0,dy:0};liveRef.current=l;setLive(l);
+    listen(ev=>{const n={kind,id,dx:Math.round((ev.clientX-sx)/scale/4)*4,dy:Math.round((ev.clientY-sy)/scale/4)*4};liveRef.current=n;setLive(n)},
+    ()=>{const l=liveRef.current;liveRef.current=null;setLive(null);if(!l||(!l.dx&&!l.dy))return;
+      const mv=p=>({x:p.x+l.dx,y:p.y+l.dy});const patch={};
+      if(kind==="slot")patch.slots={[id]:mv(G0.slots[id])};
+      else if(kind==="block")patch.blocks={[id]:mv(G0.blocks[id])};
+      else{patch.tags={[id]:mv(G0.tags[id])};if(G0.caps[id])patch.caps={[id]:mv(G0.caps[id])};const s={};for(let v=1;v<=97;v++)if(rua(v)===+id)s[v]=mv(G0.slots[v]);patch.slots=s}
+      onGeo(patch);setMsg(kind==="rua"?`Rua ${id} movida`:kind==="slot"?`Vaga ${id} movida`:`${(G0.blocks[id].t||"Expedição VUC").replace("\n"," ")} movida`)})};
+
+  const moving=edit&&mode==="move";
+  const btn="text-xs font-medium px-3.5 py-2 rounded-full";
+  const seg=(id,t)=>html`<button type="button" id=${"mode-"+id} onClick=${()=>setMode(id)} class=${"relative px-3 py-1.5 rounded-full text-xs font-medium "+(mode===id?"text-black":"text-muted hover:text-ink")}>
+    ${mode===id&&html`<${motion.span} layoutId="modepill" class="absolute inset-0 rounded-full" style=${{background:"var(--ink)"}} transition=${spring}/>`}<span class="relative">${t}</span></button>`;
+  const right=html`<div class="flex flex-wrap items-center justify-end gap-2">
+    ${edited&&!edit&&html`<span class="text-[11px] px-2 py-0.5 rounded-full" style=${{background:"rgba(255,181,71,.14)",color:"var(--amber)"}}>layout alterado</span>`}
+    ${edit&&html`<${motion.button} ...${tactile} type="button" disabled=${!canUndo} onClick=${()=>{onUndo();setMsg("Desfeito")}} class=${btn+" border border-white/20 "+(canUndo?"":"opacity-40")}>Desfazer</${motion.button}>`}
+    ${edit&&edited&&html`<${motion.button} ...${tactile} type="button" onClick=${()=>{onReset();setMsg("Layout "+cur+" limpo")}} class=${btn+" text-muted hover:text-ink"}>Limpar layout</${motion.button}>`}
+    <${motion.button} ...${tactile} type="button" id="shareBtn" onClick=${()=>setShare(true)} class=${btn+" border border-white/20 inline-flex items-center gap-1.5"}><svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="M4 18l5-5 4 4 3-3 4 4" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Ver imagem</${motion.button}>
+    
+    <${motion.button} ...${tactile} type="button" id="editBtn" onClick=${()=>setEdit(!edit)} class=${btn+" "+(edit?"bg-white text-black":"border border-white/20")}>${edit?"Concluir":"Editar layout"}</${motion.button}>
+  </div>`;
+  const dragProps=(kind,id)=>moving?{onPointerDown:e=>startMove(e,kind,id),style:{touchAction:"none",cursor:"grab"}}:{};
+  const isLive=(kind,id)=>live&&live.kind===kind&&String(live.id)===String(id);
+  return html`<${Card} className="md:col-span-12" title=${"Layout e vagas · "+cur} right=${right}>
+    <${AnimatePresence}>${share&&html`<${ShareModal} key="share" cur=${cur} L=${L} onClose=${()=>setShare(false)}/>`}</${AnimatePresence}>
+
+    <${AnimatePresence}>${edit&&html`<${motion.div} initial=${{opacity:0,height:0}} animate=${{opacity:1,height:"auto"}} exit=${{opacity:0,height:0}} class="overflow-hidden">
+      <div class="mb-3 flex flex-wrap items-center gap-3">
+        <${LayoutGroup} id="modes"><div class="inline-flex p-1 rounded-full" style=${{background:"rgba(255,255,255,.06)"}}>${seg("pick","Marcar vaga")}${seg("swap","Arrastar")}${seg("move","Mover no desenho")}${seg("tag","Escrever rota/gaiola")}</div></${LayoutGroup}>
+
+        <span class="text-muted text-xs">${mode==="pick"?"Clique no quadrado da vaga e escolha a transportadora na barra abaixo. Depois de escolher, já passa para a próxima vaga da rua.":mode==="tag"?"Toque numa vaga e digite o nome da gaiola/rota que fica em cima dela (ex.: VD2_CHP). Enter salva; deixe vazio para apagar.":mode==="swap"?"Arraste a peça até outra vaga: ela pega o número de lá e mantém a transportadora. Se tiver alguém, os dois trocam.":"Arraste qualquer peça, esteira, mezanino, rampa ou a faixa da expedição. Para mover a coluna inteira, arraste a etiqueta RUA."}</span>
+      </div>
+      ${mode==="swap"&&html`<div class="mb-4 pb-4 border-b border-line flex flex-wrap gap-2">
+        ${Object.keys(CARRIERS).map(k=>{const c=CARRIERS[k];return html`<div key=${k} onPointerDown=${e=>start(e,k,null)}
+          class="cursor-grab select-none flex items-center gap-2 rounded-xl pl-1 pr-3 py-1 border border-line bg-white/[.03] hover:bg-white/[.07]" style=${{touchAction:"none"}}>
+          <span class="w-8 h-8 rounded-lg flex items-center justify-center font-display text-[10px]" style=${{background:c.bg,color:c.fg,boxShadow:"inset 0 0 0 1px rgba(0,0,0,.3)"}}>${k}</span>
+          <span class="text-xs">${c.n}</span></div>`})}
+      </div>`}
+    </${motion.div}>`}</${AnimatePresence}>
+    ${ReactDOM.createPortal(html`<${AnimatePresence}>${msg&&html`<${motion.div} key="toast" initial=${{opacity:0,y:16,x:"-50%"}} animate=${{opacity:1,y:0,x:"-50%"}} exit=${{opacity:0,y:16,x:"-50%"}} class="fixed left-1/2 z-[150] text-sm rounded-2xl px-4 py-2.5 shadow-2xl max-w-[92vw]" style=${{bottom:"calc(20px + env(safe-area-inset-bottom,0px))",background:"rgba(10,30,44,.96)",color:"var(--accent)",border:"1px solid rgba(76,195,255,.35)"}}>${msg}</${motion.div}>`}</${AnimatePresence}>`,document.body)}
+    ${edit&&mode==="pick"&&(()=>{const v=pickV;const cur0=v?L.map[v]:null;const seq=v?LR_NUMS[rua(v)]:[];const nx=v?seq[seq.indexOf(v)+1]:null;const pv=v?seq[seq.indexOf(v)-1]:null;
+      const choose=k=>{if(!v){setMsg("Clique primeiro no quadrado da vaga.");return}onEdit({...L.map,[v]:k});setMsg(`Vaga ${v} (Rua ${rua(v)}): ${CARRIERS[k].n}`);setPickV(nx||null)};
+      return html`<div class="sticky z-30 mb-3 rounded-2xl border p-2 flex flex-col gap-2" style=${{top:"62px",background:"rgba(14,18,24,.97)",borderColor:v?"rgba(76,195,255,.45)":"rgba(255,255,255,.1)"}}>
+        <div class="flex items-center gap-2 px-1 min-w-0">
+          ${v?html`<span class="font-mono font-bold text-sm px-2 py-0.5 rounded" style=${{background:"var(--accent)",color:"#04121b"}}>${v}</span>
+              <span class="text-xs truncate">Rua ${rua(v)} <span class="text-muted">· agora: ${CARRIERS[cur0]?CARRIERS[cur0].n:"—"}</span></span>`
+            :html`<span class="text-xs text-muted">Clique no quadrado da vaga na planta e depois na transportadora aqui.</span>`}
+          <span class="ml-auto flex items-center gap-1">
+            <button type="button" disabled=${!pv} onClick=${()=>setPickV(pv)} class=${"text-xs px-2 py-1 rounded-lg border border-white/15 "+(pv?"":"opacity-30")}>‹ anterior</button>
+            <button type="button" disabled=${!nx} onClick=${()=>setPickV(nx)} class=${"text-xs px-2 py-1 rounded-lg border border-white/15 "+(nx?"":"opacity-30")}>próxima ›</button></span>
+        </div>
+        <div class="flex flex-wrap gap-1">${Object.keys(CARRIERS).map(k=>{const c=CARRIERS[k];const on=v&&k===cur0;
+          return html`<button key=${k} type="button" onClick=${()=>choose(k)} class=${"flex items-center gap-1.5 rounded-lg pl-1 pr-2 py-1 border hover:bg-white/10 "+(v?"":"opacity-60")} style=${on?{borderColor:"var(--accent)"}:{borderColor:"rgba(255,255,255,.08)"}}>
+            <span class="w-7 h-6 shrink-0 rounded-md flex items-center justify-center font-display text-[9px]" style=${{background:c.bg,color:c.fg,boxShadow:"inset 0 0 0 1px rgba(0,0,0,.3)"}}>${k}</span>
+            <span class="text-[11px] whitespace-nowrap">${c.n}</span></button>`})}</div>
+      </div>`})()}
+    ${ondasNoLayout.length>0&&html`<div class="flex flex-wrap items-center gap-1.5 mb-2 text-xs"><span class="text-muted">Cor da gaiola = onda:</span>${ondasNoLayout.map(o=>html`<span key=${o} class="px-2 py-0.5 rounded font-semibold" style=${{background:ONDA_COR[(o-1)%10],color:"#04121b"}}>Onda ${o}</span>`)}${SUG.size>0&&html`<span class="ml-2 px-2 py-0.5 rounded font-semibold text-black" style=${{background:"#ddd",outline:"2px dashed #fff",outlineOffset:"1px"}}>A1*</span><span class="text-muted">= sugerida: sobrou vaga, já fica a da onda seguinte</span>`}</div>`}
+    <div ref=${wrap} class="overflow-x-auto overflow-y-hidden">
+      <div style=${{width:MW*scale,height:MH*scale}}>
+        <div class=${"relative origin-top-left rounded-2xl "+(moving?"":"")} style=${{width:MW,height:MH,transform:`scale(${scale})`,backgroundImage:moving?"radial-gradient(rgba(255,255,255,.08) 1px,transparent 1px)":"none",backgroundSize:"16px 16px"}}>
+          ${Object.entries(G.blocks).map(([id,b])=>html`<div key=${id} ...${dragProps("block",id)}
+            class=${"absolute rounded-xl flex items-center justify-center text-center whitespace-pre-line text-[11px] tracking-[.2em] text-muted font-semibold "+(b.dashed?"border border-dashed border-white/15":"border border-white/15 bg-white/[.03]")+(moving?" hover:border-[var(--accent)]":"")+(isLive("block",id)?" !border-[var(--amber)]":"")}
+            style=${{left:b.x,top:b.y,width:b.w,height:b.h,...(moving?{touchAction:"none",cursor:"grab"}:{}),fontSize:b.h>40&&b.w>200?13:10}}>${b.t}</div>`)}
+          ${Object.entries(G.caps).map(([n,c])=>html`<div key=${"c"+n} class="absolute text-[11px] uppercase tracking-[.14em] text-muted font-semibold whitespace-nowrap pointer-events-none" style=${{left:c.x,top:c.y}}>${capText(L,+n)}</div>`)}
+          ${[1,2,3,4,5].map(n=>{const t=G.tags[n];return html`<div key=${"t"+n} ...${dragProps("rua",n)} class=${"absolute z-10 font-display text-[10px] tracking-wide px-1.5 py-0.5 rounded-full whitespace-nowrap select-none "+(moving?"ring-2 ring-white/30":"")}
+            style=${{left:t.x,top:t.y,background:isLive("rua",n)?"var(--amber)":"var(--accent)",color:"#04121b",...(moving?{touchAction:"none",cursor:"grab"}:{})}}>${moving?"⠿ ":""}RUA ${n}</div>`})}
+          <${AnimatePresence} mode="popLayout">
+            <${motion.div} key=${cur} initial="hidden" animate="show" exit=${{opacity:0,transition:{duration:.15}}} variants=${{hidden:{},show:{transition:{staggerChildren:.006}}}}>
+              ${Object.keys(L.map).map(Number).sort((a,b)=>a-b).map(v=>{const k=L.map[v];const c=CARRIERS[k];const hit=!edit&&filter===k;const dim=!edit&&filter&&!hit;const isSel=(!edit&&sel===v)||(edit&&mode==="pick"&&pickV===v);const tag=L.tags[v];
+                const isFrom=drag&&drag.from===v;const isOver=drag&&over===v&&over!==drag.from;const p=G.slots[v];const lv=live&&(isLive("slot",v)||(live.kind==="rua"&&rua(v)===+live.id));
+                return html`<${motion.button} key=${v} data-v=${v} type="button" aria-label=${"Vaga "+v+", "+c.n}
+                  variants=${{hidden:{opacity:0,scale:.6},show:{opacity:dim?.14:1,scale:1,transition:{type:"spring",stiffness:500,damping:30}}}}
+                  animate=${{opacity:isFrom?.18:dim?.14:1,scale:isOver?1.12:lv?1.04:hit||isSel?1.1:1}}
+                  whileHover=${edit?{scale:1.06}:{scale:1.12,zIndex:5}} whileTap=${{scale:.94}}
+                  onClick=${()=>{if(!edit)onPick(v)}} onPointerDown=${e=>start(e,k,v)}
+                  class=${"absolute rounded-lg flex flex-col items-center justify-center leading-none "+(edit?"cursor-grab":"")}
+                  style=${{left:p.x,top:p.y,width:SZ,height:SZ,background:c.bg,color:c.fg,touchAction:edit?"none":"auto",
+                    boxShadow:isOver?"0 0 0 2px var(--bg),0 0 0 4px var(--amber),0 0 20px rgba(255,181,71,.6)":lv?"0 10px 24px rgba(0,0,0,.5),0 0 0 2px var(--amber)":isSel?"0 0 0 2px var(--bg),0 0 0 4px var(--accent)":hit?"0 0 0 2px var(--accent),0 0 18px rgba(76,195,255,.45)":"inset 0 0 0 1px rgba(0,0,0,.3)",zIndex:isOver||lv?6:hit||isSel?3:1}}>
+                  ${tag&&(()=>{const st=shortTag(tag);const tp=tagPlace(v,L.tagBelow,st.length);const og=OG[tag];return html`<span title=${tag+(og?" · Onda "+og:"")+(SUG.has(tag)?" · sugerida (sobrou vaga na onda anterior)":"")} class="absolute z-10 font-mono font-bold text-[11px] leading-[15px] px-1 rounded text-black whitespace-nowrap pointer-events-none shadow" style=${{...(tp.left?{right:"calc(100% + 4px)",top:tp.y}:tp.side?{left:tp.x,top:tp.y}:{left:tp.cx,top:tp.y,transform:"translateX(-50%)"}),background:og?ONDA_COR[(og-1)%10]:"#fff",...(SUG.has(tag)?{outline:"2px dashed #fff",outlineOffset:"1px"}:{})}}>${st}${SUG.has(tag)?"*":""}</span>`})()}
+                  <b class="font-mono text-[10px] opacity-85 pointer-events-none">${v}</b>
+                  <span class="font-display text-[11px] mt-0.5 pointer-events-none">${k==="V"?"":k}</span>
+                </${motion.button}>`})}
+            </${motion.div}>
+          </${AnimatePresence}>
+          ${edit&&mode==="tag"&&tagEd&&(()=>{const p=G.slots[tagEd.v];const kk=L.map[tagEd.v];const used=new Set(Object.values(L.tags));
+            const sug=planGaiolas().filter(r=>r.k===kk).sort((a,b)=>(a.onda||9)-(b.onda||9)||a.g.localeCompare(b.g,"pt",{numeric:true}));const save=val=>{onTag(tagEd.v,val.trim().toUpperCase());setMsg(val.trim()?`Vaga ${tagEd.v}: ${val.trim().toUpperCase()}`:`Nome tirado da vaga ${tagEd.v}`);setTagEd(null)};
+            return html`<div class="absolute z-[70] flex flex-wrap items-center gap-1 p-1.5 rounded-xl glass max-w-[360px]" style=${{left:Math.max(0,p.x-40),top:p.y+SZ+6,background:"rgba(16,20,26,.97)"}} onPointerDown=${e=>e.stopPropagation()}>
+              <label for="tagInput" class="text-[10px] text-muted px-1">Vaga ${tagEd.v}</label>
+              <input id="tagInput" autoFocus value=${tagEd.val} onInput=${e=>setTagEd({...tagEd,val:e.target.value})}
+                onKeyDown=${e=>{if(e.key==="Enter")save(tagEd.val);if(e.key==="Escape")setTagEd(null)}}
+                placeholder="VD2_CHP" class="w-28 bg-white/10 border border-line rounded-lg px-2 py-1 font-mono text-xs text-ink outline-none focus:border-[var(--accent)] uppercase"/>
+              <button type="button" onClick=${()=>save(tagEd.val)} class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-white text-black">OK</button>
+              ${tagEd.val&&html`<button type="button" onClick=${()=>save("")} class="text-xs px-2 py-1 rounded-lg text-muted hover:text-ink">Apagar</button>`}
+              <div class="basis-full text-[10px] text-muted px-1 pt-1">${sug.length?`Gaiolas de ${CARRIERS[kk].n} no planejamento:`:kk==="X"?"Vaga bloqueada.":`Nenhuma gaiola de ${CARRIERS[kk].n} no planejamento carregado. Digite acima.`}</div>
+              ${sug.length>0&&html`<div class="basis-full flex flex-wrap gap-1 max-w-[340px] max-h-[150px] overflow-auto p-0.5">${sug.map(r=>{const u=used.has(r.g)&&L.tags[tagEd.v]!==r.g;
+                return html`<button key=${r.g} type="button" onClick=${()=>save(r.g)} title=${u?"Já está em outra vaga":""} class=${"font-mono text-[11px] px-2 py-1 rounded-lg border "+(u?"border-transparent bg-white/[.03] text-muted line-through":"border-white/15 bg-white/[.06] hover:bg-white/15 text-ink")}>${r.g}<span class="text-muted text-[9px] ml-1">${r.onda?"O"+r.onda:""}</span></button>`})}</div>`}
+            </div>`})()}
+          ${drag&&drag.from&&(()=>{const p=G.slots[drag.from],c=CARRIERS[drag.k],GS=SZ*1.08;const x=p.x+SZ/2+(drag.x-drag.sx)/scale-GS/2,y=p.y+SZ/2+(drag.y-drag.sy)/scale-GS/2;
+            return html`<div class="absolute pointer-events-none rounded-lg flex flex-col items-center justify-center leading-none" style=${{left:x,top:y,width:GS,height:GS,zIndex:60,background:c.bg,color:c.fg,boxShadow:"0 14px 30px rgba(0,0,0,.6),0 0 0 2px var(--amber)",transform:"rotate(-4deg)"}}>
+              <b class="font-mono text-[10px]">${over&&over!==drag.from?over:drag.from}</b><span class="font-display text-[11px] mt-0.5">${drag.k}</span></div>`})()}
+        </div>
+      </div>
+    </div>
+    ${drag&&!drag.from&&ReactDOM.createPortal(html`<div class="fixed pointer-events-none z-[100] rounded-lg flex flex-col items-center justify-center leading-none"
+      style=${{left:drag.x-SZ*scale/2,top:drag.y-SZ*scale/2,width:SZ*scale,height:SZ*scale,background:CARRIERS[drag.k].bg,color:CARRIERS[drag.k].fg,boxShadow:"0 12px 30px rgba(0,0,0,.55),0 0 0 2px var(--amber)",transform:"rotate(-6deg)"}}>
+      <b class="font-mono" style=${{fontSize:10*scale}}>${over||"+"}</b><span class="font-display" style=${{fontSize:11*scale,marginTop:2}}>${drag.k}</span></div>`,document.body)}
+  </${Card}>`;
+}
+
+function Carriers({L,filter,setFilter}){
+  const g=groups(L);const max=Math.max(...Object.values(g).map(a=>a.length));
+  const list=Object.keys(CARRIERS).sort((a,b)=>(g[b]||[]).length-(g[a]||[]).length);
+  return html`<${Card} className="md:col-span-7" title="Transportadoras" right=${filter&&html`<${motion.button} ...${tactile} onClick=${()=>setFilter(null)} class="text-xs text-accent font-medium">Limpar filtro</${motion.button}>`}>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+      ${list.map(k=>{const n=(g[k]||[]).length;const on=filter===k;
+        return html`<${motion.button} key=${k} ...${tactile} type="button" onClick=${()=>setFilter(on?null:k)} disabled=${!n}
+          class=${"relative text-left rounded-2xl px-3 py-2.5 flex items-center gap-3 border transition-colors "+(on?"border-[var(--accent)] bg-white/[.07]":"border-transparent hover:bg-white/[.04]")+(n?"":" opacity-35 cursor-not-allowed")}>
+          <${Swatch} k=${k}/>
+          <div class="flex-1 min-w-0">
+            <div class="flex justify-between gap-2 text-sm"><span class="truncate">${CARRIERS[k].n}</span><span class="tnum text-muted font-mono text-xs">${n}</span></div>
+            <div class="h-1 rounded-full bg-white/[.06] mt-1.5 overflow-hidden"><${motion.div} class="h-full rounded-full" style=${{background:k==="X"?"#ff6b6e":"var(--accent)"}}
+              initial=${{width:0}} animate=${{width:(n/max*100)+"%"}} transition=${{duration:.7,ease:[.22,1,.36,1]}}/></div>
+          </div>
+        </${motion.button}>`})}
+    </div>
+  </${Card}>`;
+}
+
+function Detail({L,filter,sel}){
+  const g=groups(L);let body;
+  if(sel&&L.map[sel]){const k=L.map[sel];body=html`<${motion.div} key=${"v"+sel} initial=${{opacity:0,x:12}} animate=${{opacity:1,x:0}} exit=${{opacity:0,x:-12}}>
+      <div class="font-display text-6xl tnum">${sel}</div>
+      <div class="flex items-center gap-2 mt-3"><${Swatch} k=${k} size="lg"/><span class="text-lg font-semibold">${CARRIERS[k].n}</span></div>
+      <dl class="mt-5 grid grid-cols-2 gap-y-3 text-sm">
+        <dt class="text-muted">Rua</dt><dd>${area(sel)}</dd>
+        <dt class="text-muted">Veículo</dt><dd>${vehOf(L,sel)}</dd>
+        ${L.tags[sel]&&html`<dt class="text-muted">Código</dt><dd class="font-mono">${L.tags[sel]}</dd>`}
+        ${L.key&&respOfVaga(L.key,sel).length>0&&html`<dt class="text-muted">Responsável</dt><dd class="font-semibold" style=${{color:"var(--accent)"}}>${respNames(respOfVaga(L.key,sel))}</dd>`}
+        <dt class="text-muted">Mesma transp.</dt><dd class="font-mono text-xs leading-relaxed">${ranges(g[k])}</dd>
+      </dl></${motion.div}>`}
+  else if(filter){const vs=g[filter]||[];body=html`<${motion.div} key=${"f"+filter} initial=${{opacity:0,x:12}} animate=${{opacity:1,x:0}} exit=${{opacity:0,x:-12}}>
+      <div class="flex items-center gap-2"><${Swatch} k=${filter} size="lg"/><span class="text-lg font-semibold">${CARRIERS[filter].n}</span></div>
+      <div class="font-display text-5xl tnum mt-4">${vs.length}<span class="text-muted text-base font-sans ml-2">vagas</span></div>
+      <div class="flex flex-wrap gap-1.5 mt-5">${vs.map(v=>html`<span key=${v} class="font-mono text-xs px-2 py-1 rounded-lg bg-white/[.06] tnum">${v}</span>`)}</div></${motion.div}>`}
+  else body=html`<${motion.p} key="empty" initial=${{opacity:0}} animate=${{opacity:1}} class="text-muted text-sm leading-relaxed">Toque numa vaga da planta ou numa transportadora para ver os detalhes aqui.</${motion.p}>`;
+  return html`<${Card} className="md:col-span-5" title="Detalhe"><${AnimatePresence} mode="wait">${body}</${AnimatePresence}></${Card}>`;
+}
+
+function Table({cur,L}){
+  const g=groups(L);const [msg,setMsg]=useState("");const OG=ondaPorGaiola();const SUG=svcSugSet(cur);
+  const PL=(()=>{try{const src=svcReadPlan();const q=svcWaveQueue(src);if(!q.length)return {};const o=JSON.parse(localStorage.getItem("svc-occupation-v1")||"{}")[cur]||{};return svcPlanSlots(q,L.map,L.tags,o.done||[]).out}catch(e){return {}}})();
+  const KR=(()=>{const o={};if(!g.VUC)return o;try{svcWaveQueue(svcReadPlan()).forEach(q=>{if(q.vuc&&CARRIERS[q.kr])o[q.g]=CARRIERS[q.kr].n})}catch(e){}return o})();
+  const copy=()=>{const txt=["Layout;Vaga;Rua;Sigla;Transportadora;Local;Veículo;Código"].concat(Object.keys(L.map).map(Number).sort((a,b)=>a-b).map(v=>[cur,v,"Rua "+rua(v),L.map[v],CARRIERS[L.map[v]].n,area(v),vehOf(L,v),L.tags[v]||""].join(";"))).join("\n");
+    navigator.clipboard.writeText(txt).then(()=>setMsg("Copiado")).catch(()=>setMsg("Não deu para copiar aqui"));setTimeout(()=>setMsg(""),2200)};
+  return html`<${Card} className="md:col-span-12" title=${"Montagem por transportadora · "+cur}
+      right=${html`<div class="flex items-center gap-3"><${AnimatePresence}>${msg&&html`<${motion.span} initial=${{opacity:0,y:4}} animate=${{opacity:1,y:0}} exit=${{opacity:0}} class="text-xs text-accent">${msg}</${motion.span}>`}</${AnimatePresence}>
+        <${motion.button} ...${tactile} onClick=${copy} class="text-xs font-medium px-3.5 py-2 rounded-full bg-white text-black">Copiar para Excel</${motion.button}></div>`}>
+    <div class="overflow-x-auto -mx-1">
+      <table class="w-full min-w-[620px] text-sm">
+        <thead><tr class="text-left text-[11px] uppercase tracking-[.14em] text-muted"><th class="py-2 px-1 font-semibold">Transportadora</th><th class="py-2 px-1 font-semibold">Ruas</th><th class="py-2 px-1 font-semibold">Qtd</th><th class="py-2 px-1 font-semibold">Vagas</th><th class="py-2 px-1 font-semibold">Gaiola em cada vaga agora</th></tr></thead>
+        <tbody>${Object.keys(CARRIERS).filter(k=>g[k]).map(k=>html`<tr key=${k} class="border-t border-line">
+          <td class="py-2.5 px-1"><div class="flex items-center gap-2"><${Swatch} k=${k}/>${CARRIERS[k].n}</div></td>
+          <td class="py-2.5 px-1 text-xs whitespace-nowrap">${[...new Set(g[k].map(rua))].sort().map(r=>"Rua "+r).join(", ")}</td><td class="py-2.5 px-1 font-mono tnum">${g[k].length}</td>
+          <td class="py-2.5 px-1 font-mono text-xs text-white/80 tnum">${ranges(g[k])}</td>
+          <td class="py-2.5 px-1"><div class="flex flex-wrap gap-1">${k==="X"||k==="V"?html`<span class="text-muted text-xs">—</span>`:g[k].map(v=>{const t=L.tags[v];const og=OG[t];return html`<span key=${v} class="font-mono text-[11px] px-1.5 py-0.5 rounded tnum" style=${t?{background:og?ONDA_COR[(og-1)%10]:"#fff",color:"#04121b"}:{background:"rgba(255,255,255,.05)",color:"var(--muted)"}}>${v}${t?" · "+shortTag(t)+(KR[t]?" · "+KR[t]:"")+(SUG.has(t)?" (sugerida O"+og+")":""):" · livre"}${PL[v]&&PL[v].length>1?html`<b title=${"Depois: "+PL[v].slice(1).map((q,i)=>(i+2)+"ª "+q.g+" (O"+q.w+")").join(", ")}> +${PL[v].length-1}</b>`:""}</span>`})}</div></td></tr>`)}</tbody>
+      </table>
+    </div>
+    <p class="text-muted text-xs mt-4 max-w-[80ch]">Onde montar cada transportadora e qual gaiola vai em cada vaga agora (cor = onda). "+3" = depois dessa, a vaga ainda recebe mais 3 gaiolas, uma de cada vez (passe o mouse para ver quais). X = bloqueada · V = vaga livre, sem uso neste ciclo. Quando o planejamento é importado, o app monta isso sozinho; para ajustar à mão, use Editar layout acima.</p>
+  </${Card}>`;
+}
+
+/* ============ PLANEJAMENTO ============ */
+const normTxt=s=>String(s??"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/\s+/g," ").trim();
+const ALIASES=[["AV",["AVTLOG","AVT LOG"]],["ME",["MELI EXTRA"]],["EC",["ECO EXPRESS","ECOEXPRESS"]],["MS",["SIMOES"]],["HW",["HAWK"]],["PL",["PRALOG"]],["OT",["ONTIME","ON TIME"]],["PC",["PARCEIRO"]],["KG",["KANGU"]],["DL",["DELUNA"]],["CM",["COOPMETRO"]],["DC",["DECARGO"]],["AL",["ALC"]],["PY",["PY"]]];
+function matchCarrier(raw){const n=normTxt(raw);if(!n)return null;if(CARRIERS[n]&&n!=="X"&&n!=="VUC")return n;
+  for(const [k,al] of ALIASES)if(al.some(a=>n===a||n.includes(a)))return k;return null}
+const FIELDS=[
+  {id:"gaiola",label:"Gaiola",re:/GAIOLA|CAGE/},
+  {id:"rota",label:"Rota",re:/ROTA|ROUTE/},
+  {id:"transp",label:"Transportadora",re:/TRANSP|CARRIER|EMPRESA|SIGLA|MLP/},
+  {id:"onda",label:"Onda",re:/ONDA|WAVE/},
+  {id:"parada",label:"Paradas",re:/^PARADAS?$|STOP/},
+  {id:"pacotes",label:"Pacotes",re:/^SPR$|^PACOTES?$|^SHIPMENTS?$/},
+  {id:"saca",label:"Saca",re:/^SACA|BAG/},
+  {id:"modal",label:"Modal",re:/MODAL|VEICULO/},
+  {id:"bairros",label:"Bairros",re:/BAIRRO/},
+  {id:"rua",label:"Rua",re:/^RUA/},
+  {id:"vaga",label:"Vaga",re:/^VAGA/},
+];
+function guessMap(headers){const m={};const used=new Set();
+  FIELDS.forEach(f=>{const h=headers.find(h=>!used.has(h)&&f.re.test(normTxt(h)));if(h){m[f.id]=h;used.add(h)}});
+  if(!m.transp&&headers[0]&&!used.has(headers[0]))m.transp=headers[0];
+  return m}
+// cabeçalho quebrado (ex.: "F15_AM" no lugar de GAIOLA): acha a coluna pelo conteúdo (A13_AM1, VG4_AM1, SACA)
+function fixMapByContent(m,headers,rows){if(m.gaiola)return m;const used=new Set(Object.values(m));const smp=rows.slice(0,200);
+  const h=headers.find(h=>{if(used.has(h))return false;const v=smp.map(r=>String(r[h]||"").trim()).filter(Boolean);
+    return v.length>=5&&v.filter(x=>/^SACA$/i.test(x)||/^[A-Z]{1,3}\d+_[A-Z]{2,4}\d*$/i.test(x)).length/v.length>=.6});
+  return h?{...m,gaiola:h}:m}
+// acha a linha de cabeçalho (a planilha pode ter título em cima)
+// planilha sem cabeçalho: descobre cada coluna pelo conteúdo
+function inferHeaders(aoa){
+  const data=aoa.filter(r=>r.some(c=>c));if(!data.length)return null;const n=Math.max(...data.map(r=>r.length));const smp=data.slice(0,80);
+  const tests={transp:v=>!!matchCarrier(v)||/^ESVAZIAR$/i.test(v),data:v=>/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(v),
+    rota:v=>/^[A-Z]{2,4}\d*_\d+(_\d+)*$/i.test(v),gaiola:v=>/^SACA$/i.test(v)||/^[A-Z]{1,3}\d+_[A-Z]{2,4}\d*$/i.test(v),
+    onda:v=>/^(ONDA\s*\d+|SEM ONDA)$/i.test(v),parada:v=>/^\d{1,4}$/.test(v)};
+  const names={transp:"Transportadora",data:"Data",rota:"Rota",gaiola:"Gaiola",onda:"Onda",parada:"Paradas"};
+  const headers=[];const used=new Set();
+  for(let i=0;i<n;i++){let bestK=null,bestR=0;Object.keys(tests).forEach(k=>{if(used.has(k))return;const vals=smp.map(r=>r[i]||"").filter(Boolean);if(!vals.length)return;
+      const r=vals.filter(tests[k]).length/vals.length;if(r>bestR){bestR=r;bestK=k}});
+    if(bestK&&bestR>=.6){used.add(bestK);headers.push(names[bestK])}else headers.push("Coluna "+(i+1))}
+  if(!(used.has("rota")||used.has("gaiola"))||!used.has("transp"))return null;
+  const rows=data.map(r=>{const o={};headers.forEach((h,i)=>o[h]=r[i]??"");return o});
+  return {rows,headers,title:"",headerRow:0,noHeader:true};
+}
+function fromAOA(aoa){
+  aoa=aoa.map(r=>(r||[]).map(c=>String(c??"").trim()));
+  let hi=0,best=-1;
+  aoa.slice(0,20).forEach((r,i)=>{const sc=r.filter(c=>c&&FIELDS.some(f=>f.re.test(normTxt(c)))).length;if(sc>best){best=sc;hi=i}});
+  if(best<2){const inf=inferHeaders(aoa);if(inf)return inf}
+  const seen={};const headers=aoa[hi].map((h,i)=>{let n=h||("Coluna "+(i+1));if(seen[n])n+=" ("+(++seen[n])+")";else seen[n]=1;return n});
+  const title=aoa.slice(0,hi).flat().filter(Boolean).join(" ");
+  const rows=aoa.slice(hi+1).filter(r=>r.some(c=>c)).map(r=>{const o={};headers.forEach((h,i)=>o[h]=r[i]??"");return o});
+  return {rows,headers,title,headerRow:hi+1};
+}
+function detectCiclo(title,rows,m){
+  const t=normTxt(title+" "+rows.slice(0,30).map(r=>(r[m.rota]||"")+" "+(r[m.gaiola]||"")).join(" "));
+  if(/CHP|AM0/.test(t))return "AM0-CHP";
+  if(/_SD|SD_|PLANEJAMENTO SD/.test(t))return "SD";
+  if(/_PM\d?(?![A-Z])|(^|[^A-Z])PM\d?_|PLANEJAMENTO PM/.test(t))return "PM";
+  if(/_AM\d?(?![A-Z])|(^|[^A-Z])AM\d?_|PLANEJAMENTO AM/.test(t))return "AM";
+  return null}
+const ondaNum=v=>{const d=String(v??"").match(/\d+/);return d?+d[0]:null};
+const numOr=v=>{const s=String(v??"").trim();return s!==""&&!isNaN(+s)?+s:s};
+// planilha pode trazer rotas de outro dia (DATA EXP diferente, ex.: saem na manhã seguinte): ficam fora
+// data como dd/mm (aceita 18/11, 18/11/2026 e número de série do Excel, ex.: 46338)
+function planDD(v){const t=String(v??"").trim();let m=t.match(/^(\d{1,2})\/(\d{1,2})(\/\d{2,4})?$/);if(m)return m[1].padStart(2,"0")+"/"+m[2].padStart(2,"0");
+  if(/^\d{5}(\.\d+)?$/.test(t)){const d=new Date(Date.UTC(1899,11,30)+Math.floor(+t)*864e5);return String(d.getUTCDate()).padStart(2,"0")+"/"+String(d.getUTCMonth()+1).padStart(2,"0")}return ""}
+function planDia(rows){const r0=rows&&rows[0];if(!r0)return null;const isD=v=>!!planDD(v);
+  const h=Object.keys(r0).find(h=>/^DATA/.test(normTxt(h))&&rows.slice(0,200).filter(r=>isD(r[h])).length>=Math.min(20,rows.length*.5));if(!h)return null;
+  const c={};rows.forEach(r=>{const d=planDD(r[h]);if(d)c[d]=(c[d]||0)+1});const dia=Object.keys(c).sort((a,b)=>c[b]-c[a])[0];
+  return dia?{h,dia}:null}
+function planOutroDia(rows,m){const pd=planDia(rows);if(!pd)return [];const key=r=>String(r[m.rota]||r[m.gaiola]||"").trim();
+  const o=new Map();rows.forEach(r=>{const d=planDD(r[pd.h]);if(d&&d!==pd.dia&&key(r)&&!/^SACA$/i.test(String(r[m.gaiola]||"").trim()))o.set(key(r),d)});return [...o].map(([rota,d])=>({rota,d}))}
+function aggregate(rows,m){
+  {const pd=planDia(rows);if(pd)rows=rows.filter(r=>{const d=planDD(r[pd.h]);return !d||d===pd.dia})}
+  const keyOf=r=>String(r[m.rota]||r[m.gaiola]||"").trim();
+  const by=new Map();
+  rows.forEach(r=>{const key=keyOf(r);if(!key)return;const kk=key+"|"+normTxt(r[m.transp]);if(!by.has(kk))by.set(kk,[]);by.get(kk).push(r)});
+  const items=[];
+  by.forEach(list=>{const r0=list[0];const multi=list.length>1;
+    const distinct=f=>m[f]?[...new Set(list.map(r=>String(r[m[f]]??"").trim()).filter(Boolean))]:[];
+    let ruas=null;
+    if(m.rua){const n=ondaNum(r0[m.rua]);if(n&&n<=5)ruas=[n]}
+    if(!ruas&&m.vaga){const v=ondaNum(r0[m.vaga]);if(v&&v<=97)ruas=[rua(v)]}
+    const bairros=m.bairros?String(r0[m.bairros]||""):"";
+    const sm=normTxt(bairros).match(/ROTA MAE.*?SACA(?:\(S\)|S)?\s*-\s*([\d,\s]+)/);
+    items.push({key:keyOf(r0),rota:m.rota?String(r0[m.rota]||"").trim():"",gaiola:m.gaiola?String(r0[m.gaiola]||"").trim():"",
+      transpRaw:String(r0[m.transp]??"").trim(),k:matchCarrier(r0[m.transp]),onda:m.onda?ondaNum(r0[m.onda]):null,
+      parada:multi?distinct("parada").length:numOr(m.parada?r0[m.parada]:""),
+      saca:multi?(distinct("saca").length||""):(m.saca?String(r0[m.saca]||"").trim():""),
+      modal:m.modal?String(r0[m.modal]||"").trim():"",bairros:sm?"":bairros,
+      sacaIds:sm?sm[1].split(",").map(s=>s.trim()).filter(Boolean):[],
+      pac:m.pacotes?list.reduce((a,r)=>a+(parseFloat(String(r[m.pacotes]??"").replace(",","."))||0),0):0,
+      pacotes:list.length,multi,ruasFix:ruas,children:[]});
+  });
+  // sacas (gaiola "SACA") vão para dentro da rota mãe
+  const byKey=new Map(items.map(i=>[i.key,i]));const out=[];
+  items.forEach(i=>{const isSaca=normTxt(i.gaiola)==="SACA";const parentKey=i.rota.replace(/_\d+$/,"");const p=byKey.get(parentKey);
+    if(isSaca&&p&&p!==i)p.children.push(i);else out.push(i)});
+  out.forEach(i=>i.children.sort((a,b)=>a.rota.localeCompare(b.rota,"pt",{numeric:true})));
+  return out;
+}
+function carrierRuas(L,k){const s=new Set();Object.entries(L.map).forEach(([v,c])=>{if(c===k)s.add(rua(+v))});return [...s].sort()}
+const RUA_NOME=["","coluna esquerda (ímpares)","coluna esquerda (pares)","ao lado da esteira","lado direito (VUC)","frente do mezanino"];
+function parseDefault(){return null}
+const plural=(n,a,b)=>n+" "+(n===1?a:b);
+
+let CICLO_TAG="";
+const short=x=>{x=String(x||"");if(!CICLO_TAG)return x;return x.replace(new RegExp("_"+CICLO_TAG+"$"),"").replace(new RegExp("^"+CICLO_TAG+"_"),"")};
+function cicloTag(rows,m){const c={};rows.forEach(r=>{[r[m.gaiola],r[m.rota]].forEach(v=>{const x=String(v||"").trim();let t=x.match(/_([A-Z]{2}\d*)$/);if(t)c[t[1]]=(c[t[1]]||0)+1;t=x.match(/^([A-Z]{2}\d*)_\d/);if(t)c[t[1]]=(c[t[1]]||0)+1})});
+  const best=Object.entries(c).sort((a,b)=>b[1]-a[1])[0];return best&&best[1]>=3?best[0]:""}
+
+/* ============ MONTAR LAYOUT (planejamento → desenho → rotas nas vagas) ============ */
+function MontarBar({cur,setCur,onZero,onApplyRead,onDistribute,open,setOpen,L,onPick}){
+  const readPlan=()=>{try{const s=JSON.parse(localStorage.getItem("svc-plan2")||"null");return s&&s.rows?s:null}catch(e){return null}};
+  const [src,setSrc]=useState(readPlan);const [zeroAsk,setZeroAsk]=useState(false);const [reading,setReading]=useState(false);
+  const [paste,setPaste]=useState(false);const [busy,setBusy]=useState(false);const [msg,setMsg]=useState("");const [err,setErr]=useState("");
+  useEffect(()=>{const fn=e=>{const v=e.detail;setSrc(v&&v.rows?v:null)};window.addEventListener("svc-plan-remote",fn);return()=>window.removeEventListener("svc-plan-remote",fn)},[]);
+  useEffect(()=>{if(!msg)return;const t=setTimeout(()=>setMsg(""),5000);return()=>clearTimeout(t)},[msg]);
+  const m=src?src.map||{}:{};const ciclo=src?detectCiclo(src.title||"",src.rows,m):null;
+  const nRotas=src&&(m.rota||m.gaiola)&&m.transp?planGaiolas().length:0;
+  const save=obj=>{obj={...obj,savedAt:Date.now()};setSrc(obj);try{localStorage.setItem("svc-plan2",JSON.stringify(obj))}catch(e){}svcSavePlanRemote(obj)};
+  const load=(aoa,name)=>{const t=fromAOA(aoa);if(!t.rows.length){setErr("Não encontrei linhas nessa planilha.");return}
+    const gm=fixMapByContent(guessMap(t.headers),t.headers,t.rows);setErr((gm.rota||gm.gaiola)&&gm.transp?"":"Não achei as colunas de rota/gaiola e transportadora nessa planilha.");
+    save({...t,name,at:new Date().toLocaleString("pt-BR"),map:gm});const c=detectCiclo(t.title||"",t.rows,gm);if(c&&c!==cur)setCur(c);setMsg("Planejamento importado"+(c?" · ciclo "+c:""))};
+  const onFile=async f=>{if(!f)return;setErr("");setBusy(true);try{const wb=await svcReadWorkbook(f,{});let best=null;
+      wb.SheetNames.forEach(n=>{const aoa=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:false,defval:""});const t=fromAOA(aoa);const g=guessMap(t.headers);
+        const sc=(g.rota?2:0)+(g.gaiola?2:0)+(g.onda?1:0)+t.rows.length/1e6;if(!best||sc>best.sc)best={aoa,sc}});
+      load(best?best.aoa:[],f.name)}catch(e){console.error(e);setErr("Não consegui ler esse arquivo. Use .xlsx, .xls ou .csv.")}finally{setBusy(false)}};
+  const onPaste=t=>{const lines=t.replace(/\r/g,"").split("\n").filter(l=>l.trim());if(lines.length<2){setErr("Cole o cabeçalho e pelo menos uma linha.");return}
+    const sep=lines.some(l=>l.includes("\t"))?"\t":lines[1].includes(";")?";":",";setPaste(false);load(lines.map(l=>l.split(sep)),"Planejamento colado")};
+  const zero=()=>{if(!zeroAsk){setZeroAsk(true);setTimeout(()=>setZeroAsk(false),4000);return}
+    const z={empty:true,savedAt:Date.now()};try{localStorage.setItem("svc-plan2",JSON.stringify(z))}catch(e){}svcSavePlanRemote(z);setSrc(null);setZeroAsk(false);onZero();setMsg("Planejamento e layout "+cur+" zerados. Importe o do próximo ciclo.")};
+  const g=groups(L);const tot=Object.keys(L.map).length-(g.V||[]).length;const bloq=(g.X||[]).length;const nT=Object.keys(g).filter(k=>k!=="X"&&k!=="V").length;const vazio=layoutVazio(L);
+  const [q,setQ]=useState("");const qv=parseInt(q,10);const qk=L.map[qv];
+  const num=(n,done)=>html`<span class="w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold" style=${done?{background:"#5ee6b0",color:"#04121b"}:{background:"rgba(255,255,255,.08)",color:"var(--muted)"}}>${done?"✓":n}</span>`;
+  const btn="text-xs font-semibold px-3 py-1.5 rounded-full whitespace-nowrap";
+  const box="rounded-xl bg-white/[.03] border border-line px-2.5 py-2 flex items-center gap-2 min-w-0";
+  const planTxt=busy?"Lendo…":src?`${plural(nRotas,"rota","rotas")}${ciclo?" · "+ciclo:""}`:"nenhum";
+  return html`<${motion.section} variants=${rise} class="md:col-span-12 rounded-2xl px-3 py-2.5 flex flex-col gap-2" style=${{background:"rgba(76,195,255,.06)",border:"1px solid rgba(76,195,255,.2)"}}>
+    <div class="flex items-center gap-2 min-w-0">
+      <button type="button" onClick=${()=>setOpen(!open)} aria-expanded=${open} class="flex items-center gap-2 min-w-0 text-left">
+        <span class="text-muted text-xs transition-transform" style=${{transform:open?"rotate(90deg)":"none"}}>▶</span>
+        <span class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold whitespace-nowrap">Montar layout ${cur}</span>
+      </button>
+      ${!open&&html`<span class="text-xs text-muted truncate">· Plan.: ${planTxt}</span>`}
+      ${!open&&(vazio?html`<span class="text-xs truncate" style=${{color:"var(--amber)"}}>· layout não lido</span>`
+        :html`<span class="text-xs text-muted tnum truncate hidden sm:inline">· <b class="text-ink">${tot-bloq}</b> ativas · <b style=${{color:"#ff6b6e"}}>${bloq}</b> bloq. · <b style=${{color:"var(--accent)"}}>${nT}</b> transp.</span>`)}
+      <div class="ml-auto flex items-center gap-1.5">
+        ${!open&&html`<button type="button" onClick=${()=>setReading(true)} class=${btn} style=${{background:"var(--accent)",color:"#04121b"}}>Ler desenho</button>`}
+        <button type="button" onClick=${()=>setOpen(!open)} class="text-xs text-muted hover:text-ink px-2">${open?"Recolher":"Mostrar"}</button>
+      </div>
+    </div>
+    ${open&&html`<div class="flex items-stretch gap-2">
+      <div class="order-2 shrink-0 rounded-xl bg-white/[.03] border border-line px-3 py-2 flex items-center gap-2"><span class="text-sm font-semibold whitespace-nowrap">Zerar ciclo</span>
+        <button type="button" onClick=${zero} title=${"Apaga o planejamento e limpa o layout "+cur} class=${btn+" border"} style=${zeroAsk?{background:"#e5262a",color:"#fff",borderColor:"#e5262a"}:{borderColor:"rgba(229,38,42,.6)",color:"#ff8a8c"}}>${zeroAsk?"Confirmar":"Zerar"}</button></div>
+      <div class="rounded-xl bg-white/[.03] border border-line order-1 flex-1 px-4 py-4 flex flex-wrap items-center gap-x-5 gap-y-1 min-w-0">
+        <span class="text-[10px] uppercase tracking-[.16em] text-muted font-semibold">Layout do SVC</span>
+        <span class="font-display leading-none tracking-tight" style=${{fontSize:"72px",lineHeight:"64px"}}>${cur}</span>
+        ${vazio?null:html`<span class="text-xs text-muted tnum"><b class="text-ink text-base">${tot-bloq}</b> vagas ativas · <b class="text-base" style=${{color:"#ff6b6e"}}>${bloq}</b> bloqueadas · <b class="text-base" style=${{color:"var(--accent)"}}>${nT}</b> transportadoras${L.readAt?" · montado em "+L.readAt:""}</span>`}
+      </div>
+    </div>`}
+    ${paste&&html`<div><label for="pasteBox" class="block text-muted text-xs mb-2">Copie no Excel (com o cabeçalho) e cole aqui:</label>
+      <textarea id="pasteBox" rows="3" class="w-full bg-white/5 border border-line rounded-2xl p-3 font-mono text-xs outline-none focus:border-[var(--accent)]" onPaste=${e=>{e.preventDefault();onPaste(e.clipboardData.getData("text"))}}></textarea></div>`}
+    ${src&&ciclo&&ciclo!==cur&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(255,181,71,.1)",color:"var(--amber)"}}>O planejamento carregado é do ciclo ${ciclo}. <button type="button" onClick=${()=>setCur(ciclo)} class="font-semibold underline underline-offset-2">Abrir layout ${ciclo}</button></div>`}
+    ${err&&html`<div class="text-sm" style=${{color:"#ff8a8c"}}>${err}</div>`}
+    ${msg&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(76,195,255,.1)",color:"var(--accent)"}}>${msg}</div>`}
+    ${ReactDOM.createPortal(html`<${AnimatePresence}>${reading&&html`<${ReadModal} key="read" cur=${cur} onClose=${()=>setReading(false)} onApply=${(t,r,d)=>{const n=onApplyRead(t,r,d);setReading(false);setMsg(`Layout ${t} montado pelo desenho: ${n.vagas} vagas`+(n.placed?` · ${n.placed} rotas organizadas`:""))}}/>`}</${AnimatePresence}>`,document.body)}
+  </${motion.section}>`;
+}
+
+const RESP_KEY="svc-resp";
+function getRespAll(){try{return JSON.parse(localStorage.getItem(RESP_KEY)||"{}")||{}}catch(e){return {}}}
+function getResp(lk){const o=getRespAll()[lk];return (o&&Array.isArray(o.people)?o.people:[]).filter(p=>p&&String(p.nome||"").trim()&&(p.vagas||[]).length)}
+function respOfVaga(lk,v){if(!lk||!v)return [];return getResp(lk).filter(p=>p.vagas.includes(+v))}
+function respOfRuas(lk,ruas){if(!lk||!ruas||!ruas.length)return [];return getResp(lk).filter(p=>p.vagas.some(v=>ruas.includes(rua(v))))}
+const respNames=list=>list.map(p=>String(p.nome).trim()).join(", ");
+/* ============ MODO LOCAL: SEM SUPABASE ============ */
+/* Os editores já gravam os dados no localStorage do navegador.
+   Esta versão não envia nem consulta desenhos no Supabase. */
+function svcPatchRemote(_patch){ /* salvamento local feito pelos editores */ }
+function svcSavePlanRemote(_plan){
+  window.__svcPlanSync={
+    ok:true,err:"",
+    at:new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})
+  };
+  window.dispatchEvent(new Event("svc-plan-sync"));
+}
+
+/* ============ CALCULADORA DE ONDAS ============ */
+/* Divide as rotas de cada transportadora em N ondas.
+   Híbrida = rota mãe (gaiola) + sacas filhas (gaiola "SACA", rota CPM_x_y): o bloco inteiro fica na MESMA onda. */
+function svcReadPlan(){try{const s=JSON.parse(localStorage.getItem("svc-plan2")||"null");return s&&s.rows?s:null}catch(e){return null}}
+function svcStorePlan(obj){try{localStorage.setItem("svc-plan2",JSON.stringify(obj))}catch(e){}svcSavePlanRemote(obj);window.dispatchEvent(new CustomEvent("svc-plan-remote",{detail:obj}))}
+async function svcImportPlanFile(f){const wb=await svcReadWorkbook(f,{});let best=null;
+  wb.SheetNames.forEach(n=>{const aoa=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:false,defval:""});const t=fromAOA(aoa);const g=guessMap(t.headers);
+    const g2=fixMapByContent(g,t.headers,t.rows);const sc=(g2.rota?2:0)+(g2.gaiola?2:0)+(g2.onda?1:0)+t.rows.length/1e6;if(!best||sc>best.sc)best={t,g:g2,sc}});
+  if(!best||!best.t.rows.length)throw {code:"empty"};
+  if(!((best.g.rota||best.g.gaiola)&&best.g.transp))throw {code:"cols"};
+  const obj={...best.t,name:f.name,at:new Date().toLocaleString("pt-BR"),map:best.g,savedAt:Date.now()};svcStorePlan(obj);return obj}
+// colunas que parecem de transportadora (ex.: MLP e SUGESTÃO)
+function carrierCols(src){const rs=(src.rows||[]).slice(0,250);return (src.headers||[]).filter(h=>{const vals=rs.map(r=>String(r[h]||"").trim()).filter(Boolean);
+  return vals.length>=5&&vals.filter(v=>matchCarrier(v)).length/vals.length>=.5&&vals.filter(v=>/[_\/]/.test(v)).length/vals.length<.2})}
+// sufixo das gaiolas (ex.: CPM em A3_CPM) para o título do resumo
+function planTag(src){const c={};(src.rows||[]).forEach(r=>{const x=String(r[(src.map||{}).gaiola]||"").trim().match(/_([A-Z]{2,4}\d*)$/i);if(x){const t=x[1].toUpperCase();c[t]=(c[t]||0)+1}});
+  const b=Object.entries(c).sort((a,b)=>b[1]-a[1])[0];return b&&b[1]>=3?b[0]:""}
+// VUC: por enquanto só no PM. É VUC quando a coluna MODAL diz VUC (Vuc, VUC Dedicado, VUC PP...).
+// No PM, todas as gaiolas VUC vão para a Rua 4, que vira uma área compartilhada (vaga de qualquer transportadora).
+const VUC_CAP=9;
+const svcIsVuc=modal=>/(^|[^A-Z])VUC([^A-Z]|$)/.test(normTxt(modal));
+function svcVucCiclo(src){return !!src&&detectCiclo(src.title||"",src.rows||[],src.map||{})==="PM"}
+function ondaUnits(src,col){const m={...(src.map||{})};if(col)m.transp=col;if(!(m.rota||m.gaiola)||!m.transp)return {units:[],skip:[]};
+  const units=[],skip=[];const nm=v=>{const x=parseFloat(String(v??"").replace(",","."));return isFinite(x)?x:0};const pmV=svcVucCiclo(src);
+  aggregate(src.rows,m).forEach(i=>{const isSaca=normTxt(i.gaiola)==="SACA";
+    const u={key:i.key,rota:i.rota||i.key,gaiola:isSaca?"":i.gaiola,k:i.k,raw:i.transpRaw,par:nm(i.parada),pac:i.pac||0,modal:i.modal,orfa:isSaca,po:i.onda||null,
+      sacas:i.children.map(c=>({key:c.key,rota:c.rota||c.key,par:nm(c.parada),pac:c.pac||0,modal:c.modal,raw:c.transpRaw,po:c.onda||null}))};
+    // saca com onda diferente da mãe = conflito no planejamento
+    u.conf=u.sacas.filter(c=>c.po&&u.po&&c.po!==u.po).map(c=>c.rota);
+    u.hib=u.sacas.length>0||i.sacaIds.length>0;u.vuc=pmV&&svcIsVuc(i.modal);(u.k?units:skip).push(u)});
+  return {units,skip}}
+const ONDA_W={rotas:u=>1+u.sacas.length,gaiolas:()=>1,pacotes:u=>Math.max(1,u.pac+u.sacas.reduce((s,c)=>s+c.pac,0)),paradas:u=>Math.max(1,u.par+u.sacas.reduce((s,c)=>s+c.par,0))};
+const ONDA_COR=["#4cc3ff","#ffb547","#5ee6b0","#c084fc","#ff8a8c","#facc15","#38bdf8","#fb7185","#a3e635","#f472b6"];
+const byRota=(a,b)=>a.rota.localeCompare(b.rota,"pt",{numeric:true});
+function calcOndas(units,n,mode,hib,ord,fix,usePlan,allowed,vcap){const wf=ONDA_W[mode]||ONDA_W.rotas;const res={};const glob=Array(n).fill(0);const byK={};const AK={};
+  units.forEach(u=>(byK[u.k]=byK[u.k]||[]).push(u));const tot=k=>byK[k].reduce((s,u)=>s+wf(u),0);
+  Object.keys(byK).sort((a,b)=>tot(b)-tot(a)).forEach(k=>{const load=Array(n).fill(0),cnt=Array(n).fill(0);
+    let A=((allowed&&allowed[k])||[]).filter(w=>w>=0&&w<n).sort((a,b)=>a-b);if(!A.length)A=[...Array(n).keys()];AK[k]=A;
+    const put=(u,w)=>{res[u.key]=w;load[w]+=wf(u);cnt[w]++;glob[w]+=wf(u)};
+    const free=[];byK[k].slice().sort(byRota).forEach(u=>{const f=fix[u.key];
+      if(f!=null&&f<n)put(u,f);else if(usePlan&&u.po&&u.po<=n)put(u,u.po-1);else if(u.hib&&hib==="first")put(u,A[0]);else if(u.hib&&hib==="last")put(u,A[A.length-1]);else free.push(u)});
+    // meta de cada onda = parte inteira da divisão; a sobra é repartida (+1) nas ÚLTIMAS ondas da transportadora
+    const TT=tot(k),base=Math.floor(TT/A.length),sobra=TT-base*A.length;const tgt={};A.forEach((w,i)=>tgt[w]=base+(i>=A.length-sobra?1:0));
+    if(ord==="seq"){let ai=0;free.forEach(u=>{const x=wf(u);while(ai<A.length-1&&load[A[ai]]+x>tgt[A[ai]])ai++;put(u,A[ai])})}
+    else free.sort((a,b)=>wf(b)-wf(a)||byRota(a,b)).forEach(u=>{let b=A[0];for(const w of A){const fw=tgt[w]-load[w],fb=tgt[b]-load[b];
+      if(fw>fb||(fw===fb&&(cnt[w]<cnt[b]||(cnt[w]===cnt[b]&&glob[w]<glob[b]))))b=w}put(u,b)})});
+  // Rua 4 (VUC) tem vcap vagas: onda com VUC demais empurra o excesso para a onda seguinte da mesma transportadora
+  // (troca com uma gaiola comum dela, para a divisão continuar justa). Sem onda seguinte, tenta uma anterior.
+  if(vcap>0){const vc=Array(n).fill(0);units.forEach(u=>{if(u.vuc&&res[u.key]!=null)vc[res[u.key]]++});
+    for(let w=0;w<n;w++){let guard=0;while(vc[w]>vcap&&guard++<500){
+      const cand=units.filter(u=>u.vuc&&res[u.key]===w&&fix[u.key]==null).sort((a,b)=>byRota(b,a));let moved=false;
+      for(const u of cand){const A=AK[u.k]||[];const opts=[...A.filter(x=>x>w),...A.filter(x=>x<w).reverse()].filter(x=>vc[x]<vcap);if(!opts.length)continue;const w2=opts[0];
+        const sw=units.find(x=>x.k===u.k&&!x.vuc&&res[x.key]===w2&&fix[x.key]==null&&wf(x)===wf(u));
+        res[u.key]=w2;vc[w]--;vc[w2]++;if(sw)res[sw.key]=w;moved=true;break}
+      if(!moved)break}}}
+  return res}
+
+function OndasCalc({cur,L,onRedistribute}){
+  const [src,setSrc]=useState(svcReadPlan);
+  useEffect(()=>{const a=()=>setSrc(svcReadPlan());const b=e=>{const v=e.detail;setSrc(v&&v.rows?v:null)};
+    window.addEventListener("svc-plan-sync",a);window.addEventListener("svc-plan-remote",b);
+    return()=>{window.removeEventListener("svc-plan-sync",a);window.removeEventListener("svc-plan-remote",b)}},[]);
+  const [open,setOpenRaw]=useState(()=>{try{return localStorage.getItem("svc-ondas-open")!=="0"}catch(e){return true}});
+  const setOpen=v=>{setOpenRaw(v);try{localStorage.setItem("svc-ondas-open",v?"1":"0")}catch(e){}};
+  const [cfg,setCfgRaw]=useState(()=>{let c={};try{c=JSON.parse(localStorage.getItem("svc-ondas-cfg2")||"{}")||{}}catch(e){}return {n:3,mode:"gaiolas",hib:"dist",ord:"eq",col:"",...c}});
+  const setCfg=p=>setCfgRaw(o=>{const x={...o,...p};try{localStorage.setItem("svc-ondas-cfg2",JSON.stringify(x))}catch(e){}return x});
+  const stampP=src?String(src.savedAt||src.at||""):"";
+  const [fixAll,setFixAll]=useState(()=>{try{return JSON.parse(localStorage.getItem("svc-ondas-fix")||"{}")||{}}catch(e){return {}}});
+  const fix=fixAll.stamp===stampP?(fixAll.fix||{}):{};
+  const setFix=f=>{const o={stamp:stampP,fix:f};setFixAll(o);try{localStorage.setItem("svc-ondas-fix",JSON.stringify(o))}catch(e){}};
+  const [busy,setBusy]=useState(false);const [err,setErr]=useState("");const [msg,setMsg]=useState("");
+  const [openK,setOpenK]=useState(null);const [selKey,setSelKey]=useState(null);const [redoAsk,setRedoAsk]=useState(false);
+  useEffect(()=>{if(!msg)return;const t=setTimeout(()=>setMsg(""),5000);return()=>clearTimeout(t)},[msg]);
+  const cols=useMemo(()=>src?carrierCols(src):[],[src]);
+  const col=src&&cfg.col&&(src.headers||[]).includes(cfg.col)?cfg.col:((src&&src.map&&src.map.transp)||"");
+  const {units,skip}=useMemo(()=>src?ondaUnits(src,col):{units:[],skip:[]},[src,col]);
+  const planMax=units.reduce((a,u)=>Math.max(a,u.po||0),0);const nPlan=units.filter(u=>u.po).length;
+  const pm=planMax>0?(["exata","div","zero"].includes(cfg.pm)?cfg.pm:"div"):"zero";
+  const usePlan=pm==="exata";
+  const n=pm!=="zero"?Math.min(10,planMax):Math.max(1,Math.min(10,(cfg.n|0)||3));
+  // ondas em que cada transportadora trabalha: vêm da planilha (modo "div") ou todas; dá para trocar à mão
+  const [alwAll,setAlwAll]=useState(()=>{try{return JSON.parse(localStorage.getItem("svc-ondas-alw")||"{}")||{}}catch(e){return {}}});
+  const alwOv=alwAll.stamp===stampP+"|"+pm?(alwAll.ov||{}):{};
+  const setAlwOv=o=>{const x={stamp:stampP+"|"+pm,ov:o};setAlwAll(x);try{localStorage.setItem("svc-ondas-alw",JSON.stringify(x))}catch(e){}};
+  const alwBase=useMemo(()=>{const o={};if(pm==="div")units.forEach(u=>{if(u.po){(o[u.k]=o[u.k]||new Set()).add(u.po-1);u.sacas.forEach(c=>{if(c.po)o[u.k].add(c.po-1)})}});
+    const r={};Object.keys(o).forEach(k=>r[k]=[...o[k]].sort((a,b)=>a-b));return r},[units,pm]);
+  const allowed=useMemo(()=>{const r={...alwBase};Object.keys(alwOv).forEach(k=>{if(alwOv[k]&&alwOv[k].length)r[k]=alwOv[k]});return r},[alwBase,alwAll,stampP,pm]);
+  const alwOf=k=>{const a=(allowed[k]||[]).filter(w=>w<n);return a.length?a:[...Array(n).keys()]};
+  const toggleAlw=(k,w)=>{const cur=alwOf(k);const nx=cur.includes(w)?cur.filter(x=>x!==w):[...cur,w].sort((a,b)=>a-b);if(!nx.length)return;setAlwOv({...alwOv,[k]:nx})};
+  const res=useMemo(()=>calcOndas(units,n,cfg.mode,cfg.hib,cfg.ord,fix,usePlan,usePlan?null:allowed,VUC_CAP),[units,n,cfg.mode,cfg.hib,cfg.ord,fixAll,stampP,usePlan,allowed]);
+  const semOnda=usePlan?units.filter(u=>!u.po):[];const conf=units.filter(u=>u.conf&&u.conf.length);
+  const st=useMemo(()=>{const z=()=>({r:0,g:0,h:0,p:0,s:0,k:0});const waves=[...Array(n)].map(z);const byK={};
+    units.forEach(u=>{const w=res[u.key];if(w==null)return;if(!byK[u.k])byK[u.k]={tot:z(),w:[...Array(n)].map(z),list:[...Array(n)].map(()=>[])};
+      const add=o=>{o.r+=1+u.sacas.length;o.g++;o.s+=u.sacas.length;if(u.hib)o.h++;o.p+=u.par+u.sacas.reduce((s,c)=>s+c.par,0);o.k+=u.pac+u.sacas.reduce((s,c)=>s+c.pac,0)};
+      add(waves[w]);add(byK[u.k].tot);add(byK[u.k].w[w]);byK[u.k].list[w].push(u)});
+    Object.values(byK).forEach(o=>o.list.forEach(l=>l.sort(byRota)));
+    return {waves,byK,ks:Object.keys(byK).sort((a,b)=>byK[b].tot.r-byK[a].tot.r)}},[units,res,n]);
+  const T=st.waves.reduce((a,s)=>({r:a.r+s.r,g:a.g+s.g,h:a.h+s.h,s:a.s+s.s,k:a.k+s.k}),{r:0,g:0,h:0,s:0,k:0});
+  const hasPac=units.some(u=>u.pac>0);const byG=cfg.mode==="gaiolas";const nf=x=>Math.round(x).toLocaleString("pt-BR");
+  const tag=src?(planTag(src)||cur):cur;
+  const onFile=async f=>{if(!f)return;setErr("");setBusy(true);try{const o=await svcImportPlanFile(f);setSrc(o);setOpenK(null);setSelKey(null);setMsg("Planejamento importado: "+f.name)}
+    catch(e){console.error(e);setErr(e&&e.code==="cols"?"Não achei as colunas de rota/gaiola e transportadora nessa planilha.":e&&e.code==="empty"?"Não encontrei linhas nessa planilha.":"Não consegui ler esse arquivo. Use .xlsx, .xls ou .csv.")}
+    finally{setBusy(false)}};
+  const move=(key,w)=>{const f={...fix};if(w==null)delete f[key];else f[key]=w;setFix(f)};
+  const nFix=Object.keys(fix).filter(k=>units.some(u=>u.key===k)).length;
+  const applied=!!(src&&src.ondaCalc&&units.length&&units.every(u=>src.ondaCalc[u.key]===res[u.key]+1));
+  const apply=(quiet)=>{if(!src)return;const oc={};units.forEach(u=>{const w=res[u.key];if(w==null)return;oc[u.key]=w+1;u.sacas.forEach(c=>oc[c.key]=w+1)});
+    const obj={...src,ondaCalc:oc,ondaN:n,map:{...(src.map||{}),transp:col}};svcStorePlan(obj);setSrc(obj);
+    if(!quiet)setMsg(`${n} ondas gravadas no planejamento. As gaiolas do layout passam a seguir essa ordem (onda 1 nas primeiras vagas).`)};
+  // automático: sempre que a divisão muda, grava as ondas no planejamento (o layout passa a seguir)
+  useEffect(()=>{if(src&&units.length&&!applied)apply(true)},[res,units,src,applied]);
+  const [adv,setAdv]=useState(false);
+  const redo=()=>{if(!redoAsk){setRedoAsk(true);setTimeout(()=>setRedoAsk(false),4000);return}setRedoAsk(false);
+    if(!applied)apply(true);const r=onRedistribute();setMsg(`Layout ${cur}: ${plural(r.placed,"gaiola colocada","gaiolas colocadas")} pela ordem das ondas`+(r.left?` · ${r.left} sem vaga da transportadora`:""))};
+  const copyTxt=(t,ok)=>navigator.clipboard.writeText(t).then(()=>setMsg(ok)).catch(()=>setMsg("Não deu para copiar aqui."));
+  const excel=()=>{const rows=[["Onda","Transportadora","Rota","Gaiola","Tipo","Rota mãe","Modal","Paradas","Pacotes"].join("\t")];
+    for(let w=0;w<n;w++)st.ks.forEach(k=>st.byK[k].list[w].forEach(u=>{rows.push([w+1,CARRIERS[k].n,u.rota,u.gaiola,u.hib?"Híbrida (mãe)":u.orfa?"Saca sem mãe":"Normal","",u.modal,u.par,u.pac].join("\t"));
+      u.sacas.forEach(c=>rows.push([w+1,CARRIERS[k].n,c.rota,"SACA","Saca (filha)",u.rota,c.modal,c.par,c.pac].join("\t")))}));
+    copyTxt(rows.join("\n"),"Tabela copiada. Cole no Excel.")};
+  const resumo=()=>{const o=[`*DIVISÃO EM ONDAS – ${tag}*`,`Data: ${new Date().toLocaleDateString("pt-BR")}`,""];
+    for(let w=0;w<n;w++){const s=st.waves[w];o.push(`*Onda ${w+1}* – ${plural(s.r,"rota","rotas")} · ${plural(s.g,"gaiola","gaiolas")}`+(hasPac?` · ${nf(s.k)} pacotes`:""));
+      st.ks.forEach(k=>{const c=st.byK[k].w[w];if(!c.g)return;const hb=st.byK[k].list[w].filter(u=>u.hib).map(u=>`${u.rota} + ${plural(u.sacas.length,"saca","sacas")}`);
+        o.push(`• ${CARRIERS[k].n}: ${plural(c.r,"rota","rotas")}`+(hasPac?` · ${nf(c.k)} pct`:"")+(hb.length?` (${plural(c.g,"gaiola","gaiolas")} · híbrida ${hb.join(", ")})`:""))});o.push("")}
+    copyTxt(o.join("\n").trim(),"Resumo copiado. Cole no WhatsApp.")};
+  const btn="text-xs font-semibold px-3 py-1.5 rounded-full whitespace-nowrap";
+  const segB=(on)=>"px-2.5 py-1 rounded-full text-xs font-medium "+(on?"bg-white text-black":"text-muted hover:text-ink");
+  const fileIn=html`<input id="ondasFile" type="file" accept=".xlsx,.xls,.xlsm,.csv,.txt" class="sr-only" onChange=${e=>{onFile(e.target.files[0]);e.target.value=""}}/>`;
+  const sel=selKey?units.find(u=>u.key===selKey):null;
+  const grid={gridTemplateColumns:`minmax(140px,1.3fr) 118px repeat(${n},minmax(62px,1fr))`};
+  const chip=u=>{const on=selKey===u.key;const fx=fix[u.key]!=null;
+    return html`<button key=${u.key} type="button" onClick=${()=>setSelKey(on?null:u.key)} title=${u.hib?"Rota mãe com "+u.sacas.map(c=>c.rota).join(", "):u.modal}
+      class=${"text-left rounded-lg px-2 py-1 border font-mono text-[11px] leading-tight w-full "+(on?"bg-white/15":"hover:bg-white/10")}
+      style=${{borderColor:on?"var(--accent)":u.hib?"rgba(255,181,71,.5)":"rgba(255,255,255,.1)",background:on?undefined:u.hib?"rgba(255,181,71,.08)":"rgba(255,255,255,.03)"}}>
+      <div class="flex items-center gap-1 min-w-0"><b class="text-ink truncate">${u.rota}</b>${u.gaiola&&html`<span class="text-muted truncate">${shortTag(u.gaiola)}</span>`}${fx?html`<span class="ml-auto" title="Ajustada à mão" style=${{color:"var(--accent)"}}>●</span>`:usePlan&&!u.po?html`<span class="ml-auto font-sans text-[9px]" title="Sem onda na planilha: calculada pelo app" style=${{color:"var(--amber)"}}>calc</span>`:null}</div>
+      ${hasPac&&html`<div class="font-sans text-[10px] text-muted">${nf(u.pac+u.sacas.reduce((s,c)=>s+c.pac,0))} pacotes</div>`}
+      ${u.hib&&html`<div class="font-sans text-[10px]" style=${{color:"var(--amber)"}}>mãe · ${plural(u.sacas.length,"saca","sacas")}</div>`}
+      ${u.orfa&&html`<div class="font-sans text-[10px]" style=${{color:"#ff8a8c"}}>saca sem rota mãe</div>`}
+    </button>`};
+  return html`<${motion.section} variants=${rise} class="md:col-span-12 rounded-2xl px-3 py-2.5 flex flex-col gap-3" style=${{background:"rgba(255,181,71,.05)",border:"1px solid rgba(255,181,71,.22)"}}>
+    ${fileIn}
+    <div class="flex items-center gap-2 min-w-0">
+      <button type="button" onClick=${()=>setOpen(!open)} aria-expanded=${open} class="flex items-center gap-2 min-w-0 text-left">
+        <span class="text-muted text-xs transition-transform" style=${{transform:open?"rotate(90deg)":"none"}}>▶</span>
+        <span class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold whitespace-nowrap">Calculadora de ondas</span></button>
+      <span class="text-xs text-muted truncate">${src?`· ${tag} · ${plural(T.r,"rota","rotas")} em ${plural(T.g,"gaiola","gaiolas")} · ${plural(T.h,"híbrida","híbridas")}${hasPac?" · "+nf(T.k)+" pacotes":""} · ${n} ondas${pm==="exata"?" (igual à planilha)":pm==="div"?" (divididas nas ondas de cada transportadora)":""}`+(applied?" · gravadas no layout":""):"· importe o planejamento"}</span>
+      <div class="ml-auto flex items-center gap-1.5">
+        <label for="ondasFile" class=${"cursor-pointer "+btn+" border border-white/20 hover:bg-white/10"}>${busy?"Lendo…":src?"Trocar planejamento":"Importar planejamento"}</label>
+        <button type="button" onClick=${()=>setOpen(!open)} class="text-xs text-muted hover:text-ink px-2">${open?"Recolher":"Mostrar"}</button></div>
+    </div>
+    ${err&&html`<div class="text-sm" style=${{color:"#ff8a8c"}}>${err}</div>`}
+    ${msg&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(76,195,255,.1)",color:"var(--accent)"}}>${msg}</div>`}
+    ${open&&!src&&html`<div class="rounded-2xl border border-dashed border-white/20 p-4 text-sm" onDragOver=${e=>e.preventDefault()} onDrop=${e=>{e.preventDefault();onFile(e.dataTransfer.files[0])}}>
+      <div class="font-semibold">Arraste a planilha de planejamento aqui ou use Importar planejamento</div>
+      <div class="text-muted text-xs mt-1">Excel ou CSV com as colunas ROTA, GAIOLA e transportadora (MLP). As sacas (gaiola SACA, rota CPM_1_1, CPM_1_2…) entram junto da rota mãe CPM_1 e nunca são separadas dela.</div></div>`}
+    ${open&&src&&html`<div class="flex flex-col gap-3">
+      ${planMax>0&&html`<div class="rounded-xl px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs" style=${{background:"rgba(94,230,176,.08)",border:"1px solid rgba(94,230,176,.25)"}}>
+        <span style=${{color:"#5ee6b0"}} class="font-semibold">O planejamento já traz as ondas</span>
+        <span class="text-muted">${plural(nPlan,"gaiola","gaiolas")} com onda (1 a ${planMax}) na coluna ${src.map.onda}. As sacas seguem a onda da rota mãe.</span>
+        <div class="inline-flex flex-wrap p-0.5 rounded-full bg-white/[.06] ml-auto">${[["div","Dividir igual nas ondas de cada transportadora"],["exata","Igual à planilha"],["zero","Calcular do zero"]].map(([v,t])=>html`<button key=${v} type="button" onClick=${()=>setCfg({pm:v})} class=${segB(pm===v)}>${t}</button>`)}</div>
+        <span class="basis-full text-[11px] text-muted">${pm==="div"?"Cada transportadora fica só nas ondas em que ela aparece na planilha, com as rotas divididas igualmente entre elas (ex.: ONTIME nas ondas 1 e 2 com 20 rotas → 10 e 10). Se a conta não fechar, a sobra vai de 1 em 1 para as últimas ondas dela (ex.: 22 rotas em 4 ondas → 5, 5, 6, 6).":pm==="exata"?"Cada rota fica exatamente na onda que a planilha mandou.":"Ignora a planilha e divide cada transportadora em todas as ondas."}</span>
+      </div>`}
+      ${usePlan&&semOnda.length>0&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(255,181,71,.08)",color:"var(--amber)"}}>Sem onda na planilha, calculadas pelo app: ${semOnda.map(u=>u.rota+(u.orfa?" (saca sem mãe)":"")).join(", ")}</div>`}
+      ${conf.length>0&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(255,107,110,.1)",color:"#ff8a8c"}}>Saca com onda diferente da mãe (o app manda junto com a mãe): ${conf.map(u=>u.rota+" → "+u.conf.join(", ")).join(" · ")}</div>`}
+      <div class="flex items-center gap-2 text-xs"><span class="text-muted">Dividindo por <b class="text-ink">${({gaiolas:"gaiolas",rotas:"rotas (contando sacas)",pacotes:"pacotes",paradas:"paradas"})[cfg.mode]||cfg.mode}</b> · sobra nas últimas ondas · híbrida sempre junto com as sacas</span>
+        <button type="button" onClick=${()=>setAdv(!adv)} class="ml-auto text-muted hover:text-ink underline underline-offset-2">${adv?"Fechar ajustes":"Ajustes"}</button></div>
+      ${adv&&html`<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div class=${"flex items-center gap-2"+(pm!=="zero"?" opacity-40 pointer-events-none":"")} title=${pm!=="zero"?"Quantidade de ondas vem da planilha":""}><span class="text-xs text-muted">Ondas</span>
+          <div class="inline-flex items-center rounded-full border border-white/15">
+            <button type="button" aria-label="Menos uma onda" onClick=${()=>setCfg({n:Math.max(1,n-1)})} class="w-8 h-8 text-lg leading-none text-muted hover:text-ink">−</button>
+            <span class="font-display text-lg tnum w-7 text-center">${n}</span>
+            <button type="button" aria-label="Mais uma onda" onClick=${()=>setCfg({n:Math.min(10,n+1)})} class="w-8 h-8 text-lg leading-none text-muted hover:text-ink">+</button></div></div>
+        <div class="flex items-center gap-2"><span class="text-xs text-muted">Equilibrar por</span>
+          <div class="inline-flex p-0.5 rounded-full bg-white/[.06]">${[["rotas","Rotas (conta sacas)"],["gaiolas","Gaiolas"],...(hasPac?[["pacotes","Pacotes"]]:[]),["paradas","Paradas"]].map(([id,t])=>html`<button key=${id} type="button" onClick=${()=>setCfg({mode:id})} class=${segB(cfg.mode===id)}>${t}</button>`)}</div></div>
+        <div class="flex items-center gap-2"><span class="text-xs text-muted">Divisão</span>
+          <div class="inline-flex p-0.5 rounded-full bg-white/[.06]">${[["eq","Intercalada"],["seq","Em sequência"]].map(([id,t])=>html`<button key=${id} type="button" onClick=${()=>setCfg({ord:id})} class=${segB(cfg.ord===id)}>${t}</button>`)}</div></div>
+        <div class="flex items-center gap-2"><label for="ondasHib" class="text-xs text-muted">Híbridas</label>
+          <select id="ondasHib" value=${cfg.hib} onChange=${e=>setCfg({hib:e.target.value})} class="bg-white/5 border border-line rounded-lg px-2 py-1 text-xs text-ink">
+            <option value="dist">Distribuir entre as ondas</option><option value="first">Todas na onda 1</option><option value="last">Todas na última onda</option></select></div>
+        ${cols.length>1&&html`<div class="flex items-center gap-2"><label for="ondasCol" class="text-xs text-muted">Transportadora da coluna</label>
+          <select id="ondasCol" value=${col} onChange=${e=>setCfg({col:e.target.value})} class="bg-white/5 border border-line rounded-lg px-2 py-1 text-xs text-ink max-w-[200px]">${cols.map(h=>html`<option key=${h} value=${h}>${h}</option>`)}</select></div>`}
+      </div>`}
+      <div class="grid gap-2" style=${{gridTemplateColumns:`repeat(${Math.min(n,5)},minmax(0,1fr))`}}>
+        ${st.waves.map((s,w)=>html`<div key=${w} class="rounded-xl bg-white/[.03] border border-line px-3 py-2 min-w-0" style=${{borderTop:"3px solid "+ONDA_COR[w]}}>
+          <div class="text-[10px] uppercase tracking-[.16em] font-semibold" style=${{color:ONDA_COR[w]}}>Onda ${w+1}</div>
+          <div class="font-display text-2xl tnum leading-tight">${byG?s.g:s.r}<span class="text-muted font-sans text-xs ml-1">${byG?"gaiolas":"rotas"}</span></div>
+          ${hasPac&&html`<div class="text-sm tnum font-semibold" style=${{color:ONDA_COR[w]}}>${nf(s.k)} <span class="text-muted font-normal text-xs">pacotes</span></div>`}<div class="text-[11px] text-muted tnum">${byG?plural(s.r,"rota","rotas"):plural(s.g,"gaiola","gaiolas")} · ${plural(s.h,"híbrida","híbridas")}${s.s?` (${s.s} sacas)`:""} · ${s.p} paradas</div></div>`)}
+      </div>
+      <div class="overflow-x-auto"><div class="min-w-[560px] flex flex-col">
+        <div class="grid gap-2 px-2 pb-1 text-[10px] uppercase tracking-[.14em] text-muted font-semibold" style=${grid}><span>Transportadora</span><span>Total</span>${st.waves.map((_,w)=>html`<span key=${w} class="text-center" style=${{color:ONDA_COR[w]}}>Onda ${w+1}</span>`)}</div>
+        ${st.ks.map(k=>{const o=st.byK[k];const op=openK===k;
+          return html`<div key=${k} class=${"rounded-xl "+(op?"bg-white/[.04] border border-line":"")}>
+            <button type="button" onClick=${()=>{setOpenK(op?null:k);setSelKey(null)}} aria-expanded=${op} class="grid gap-2 items-center w-full text-left px-2 py-1.5 rounded-xl hover:bg-white/[.04] border-t border-line" style=${grid}>
+              <span class="flex items-center gap-2 min-w-0"><span class="text-muted text-[10px]" style=${{transform:op?"rotate(90deg)":"none"}}>▶</span><${Swatch} k=${k}/><span class="text-sm truncate">${CARRIERS[k].n}</span></span>
+              <span class="text-xs tnum"><b class="text-ink text-sm">${byG?o.tot.g:o.tot.r}</b> <span class="text-muted">${byG?"gaiolas":"rotas"}</span><br/>${hasPac?html`<span class="text-ink whitespace-nowrap">${nf(o.tot.k)} pct</span><br/>`:""}<span class="text-muted whitespace-nowrap">${byG?o.tot.r+" rotas":o.tot.g+" gaiolas"}${o.tot.h?html` · <span style=${{color:"var(--amber)"}}>${o.tot.h}H</span>`:""}</span></span>
+              ${o.w.map((c,w)=>html`<span key=${w} class="text-center tnum leading-tight">${c.g?html`<b class="text-base">${byG?c.g:c.r}</b><br/>${hasPac?html`<span class="text-[11px] text-ink">${nf(c.k)} pct</span><br/>`:""}<span class="text-[10px] text-muted">${byG?(c.r+" rota"+(c.r>1?"s":"")):(c.g+" gaiola"+(c.g>1?"s":""))}${c.h?html` · <span style=${{color:"var(--amber)"}}>${c.h}H</span>`:""}</span>`:html`<span class="text-muted">—</span>`}</span>`)}
+            </button>
+            ${op&&html`<div class="px-2 pb-2 flex flex-col gap-2">
+              ${!usePlan&&html`<div class="flex flex-wrap items-center gap-1.5 text-xs"><span class="text-muted">Ondas da ${CARRIERS[k].n}:</span>
+                ${[...Array(n)].map((_,w)=>{const on=alwOf(k).includes(w);return html`<button key=${w} type="button" onClick=${()=>toggleAlw(k,w)} class="px-2.5 py-1 rounded-full border font-semibold" style=${on?{background:ONDA_COR[w],color:"#04121b",borderColor:ONDA_COR[w]}:{borderColor:"rgba(255,255,255,.15)",color:"var(--muted)"}}>Onda ${w+1}</button>`})}
+                ${alwOv[k]&&html`<button type="button" onClick=${()=>{const o={...alwOv};delete o[k];setAlwOv(o)}} class="text-muted hover:text-ink underline underline-offset-2 ml-1">${pm==="div"?"voltar às ondas da planilha":"usar todas"}</button>`}
+                <span class="text-muted ml-1">· toque para ligar/desligar</span></div>`}
+              <div class="grid gap-2" style=${{gridTemplateColumns:`repeat(${n},minmax(110px,1fr))`}}>
+                ${o.list.map((l,w)=>html`<div key=${w} class="flex flex-col gap-1 rounded-lg p-1.5" style=${{background:"rgba(255,255,255,.02)",boxShadow:"inset 0 2px 0 "+ONDA_COR[w]}}>
+                  <div class="text-[10px] font-semibold px-0.5" style=${{color:ONDA_COR[w]}}>Onda ${w+1}</div>${l.length?l.map(chip):html`<span class="text-[11px] text-muted px-0.5">vazia</span>`}</div>`)}
+              </div>
+              ${sel&&sel.k===k&&html`<div class="rounded-xl border px-3 py-2 flex flex-col gap-2" style=${{borderColor:"rgba(76,195,255,.4)",background:"rgba(10,30,44,.6)"}}>
+                <div class="text-sm"><b class="font-mono">${sel.rota}</b>${sel.gaiola&&html` · gaiola <b class="font-mono">${sel.gaiola}</b>`}${sel.modal&&html` · <span class="text-muted">${sel.modal}</span>`} · <span class="text-muted">${sel.par} paradas</span>${hasPac?html` · <b>${nf(sel.pac)}</b> <span class="text-muted">pacotes${sel.hib?" na mãe + "+nf(sel.sacas.reduce((s,c)=>s+c.pac,0))+" nas sacas":""}</span>`:""}</div>
+                ${sel.hib&&html`<div class="text-xs"><span style=${{color:"var(--amber)"}}>Híbrida: ${plural(sel.sacas.length,"saca vai","sacas vão")} dentro desta gaiola e ${sel.sacas.length===1?"segue":"seguem"} na mesma onda.</span>
+                  <div class="flex flex-wrap gap-1 mt-1.5">${sel.sacas.map(c=>html`<span key=${c.key} title=${c.modal+" · "+c.par+" paradas"+(hasPac?" · "+c.pac+" pacotes":"")} class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/[.07]">${c.rota}${hasPac?html`<span class="text-muted"> · ${c.pac}</span>`:""}</span>`)}</div></div>`}
+                <div class="flex flex-wrap items-center gap-1.5"><span class="text-xs text-muted">Mover para</span>
+                  ${[...Array(n)].map((_,w)=>html`<button key=${w} type="button" onClick=${()=>move(sel.key,w)} class="text-xs font-semibold px-2.5 py-1 rounded-full border" style=${res[sel.key]===w?{background:ONDA_COR[w],color:"#04121b",borderColor:ONDA_COR[w]}:{borderColor:"rgba(255,255,255,.18)"}}>Onda ${w+1}</button>`)}
+                  ${fix[sel.key]!=null&&html`<button type="button" onClick=${()=>move(sel.key,null)} class="text-xs text-muted hover:text-ink underline underline-offset-2 ml-1">voltar ao automático</button>`}</div>
+              </div>`}
+            </div>`}
+          </div>`})}
+      </div></div>
+      ${skip.length>0&&html`<div class="text-xs rounded-lg px-3 py-2" style=${{background:"rgba(255,181,71,.08)",color:"var(--amber)"}}>
+        ${plural(skip.length,"rota ficou","rotas ficaram")} fora da conta (transportadora não reconhecida): ${skip.map(u=>`${u.rota}${u.sacas.length?" +"+u.sacas.length+" sacas":""} (${u.raw||"vazio"})`).join(" · ")}</div>`}
+      <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-line">
+        <button type="button" onClick=${()=>apply()} class=${btn+" "+(applied?"border border-white/20":"bg-white text-black")}>${applied?"✓ Ondas aplicadas no layout (automático)":"Aplicando…"}</button>
+        <button type="button" onClick=${redo} disabled=${layoutVazio(L)} title=${layoutVazio(L)?"Leia o desenho do layout primeiro":"Apaga as gaiolas escritas no layout "+cur+" e coloca de novo, onda 1 primeiro"} class=${btn+" border "+(layoutVazio(L)?"opacity-40":"")} style=${redoAsk?{background:"#ffb547",color:"#1b1b1b",borderColor:"#ffb547"}:{borderColor:"rgba(255,181,71,.5)",color:"var(--amber)"}}>${redoAsk?"Confirmar: refazer as gaiolas":"Reorganizar gaiolas no layout "+cur}</button>
+        <button type="button" onClick=${resumo} class=${btn+" border border-white/20"}>Copiar resumo (WhatsApp)</button>
+        <button type="button" onClick=${excel} class=${btn+" border border-white/20"}>Copiar para Excel</button>
+        ${nFix>0&&html`<button type="button" onClick=${()=>setFix({})} class="text-xs text-muted hover:text-ink underline underline-offset-2">Desfazer ${plural(nFix,"ajuste manual","ajustes manuais")}</button>`}
+        <span class="text-[11px] text-muted ml-auto">Clique numa transportadora para ver as rotas de cada onda; clique numa rota para trocar de onda.</span>
+      </div>
+    </div>`}
+  </${motion.section}>`;
+}
+
+
+/* ============ OCUPAÇÃO GRADUAL: vagas físicas são reutilizadas onda a onda ============ */
+function svcWaveQueue(src){
+  if(!src||!src.rows||!src.ondaCalc)return [];
+  const m=src.map||{};
+  if(!(m.rota||m.gaiola)||!m.transp)return [];
+  const seen=new Set();const pmV=svcVucCiclo(src);
+  return aggregate(src.rows,m).map((r,i)=>{
+    const g=String(r.gaiola&&normTxt(r.gaiola)!=="SACA"?r.gaiola:r.rota||"").trim();
+    const w=Number(src.ondaCalc[r.key]||r.onda||0);
+    // k = quem usa a vaga ("VUC" na Rua 4 compartilhada); kr = transportadora de verdade
+    const vuc=pmV&&!!r.k&&svcIsVuc(r.modal);
+    return {g,k:vuc?"VUC":r.k,kr:r.k,vuc,w,order:i,ruas:vuc?null:(r.ruasFix||null)};
+  }).filter(r=>{if(!r.g||!r.k||!r.w||seen.has(r.g))return false;seen.add(r.g);return true})
+    .sort((a,b)=>a.w-b.w||a.order-b.order);
+}
+const svcQNome=q=>q.vuc?"VUC · "+(CARRIERS[q.kr]?CARRIERS[q.kr].n:q.kr):(CARRIERS[q.k]?CARRIERS[q.k].n:q.k);
+function svcOccupationKey(src,cur){return String(src.savedAt||src.at||src.name||"")+"|"+cur}
+/* VISÃO DE EXPEDIÇÃO: plano de ocupação projetado, não telemetria dos motoristas. */
+function svcPlanSlots(queue,map,tags,done){
+  const completed=new Set(done||[]),placed=new Set();
+  const slots=Object.keys(map||{}).map(Number).filter(v=>CARRIERS[map[v]]&&map[v]!=="X"&&map[v]!=="V").sort((a,b)=>rua(a)-rua(b)||a-b);
+  const out={};slots.forEach(v=>out[v]=[]);
+  // A primeira ocupação segue o layout aprovado ou a antecipação manual.
+  for(const v of slots){const g=tags&&tags[v],q=queue.find(x=>x.g===g);if(q&&!completed.has(q.g)&&q.k===map[v]){out[v].push(q);placed.add(q.g)}}
+  const pending=queue.filter(q=>!completed.has(q.g)&&!placed.has(q.g));
+  for(const q of pending){
+    const vs=slots.filter(v=>map[v]===q.k&&(!q.ruas||q.ruas.includes(rua(v))));
+    if(!vs.length)continue;
+    vs.sort((a,b)=>out[a].length-out[b].length||rua(a)-rua(b)||a-b);
+    out[vs[0]].push(q);placed.add(q.g);
+  }
+  return {out,unplaced:queue.filter(q=>!completed.has(q.g)&&!placed.has(q.g))};
+}
+function svcCopyText(t){return navigator.clipboard.writeText(t)}
+/* 1ª ocupação: gaiolas da 1ª onda de cada transportadora nas vagas dela.
+   Sobrou vaga da transportadora? Já deixa SUGERIDAS as gaiolas da onda seguinte dela. */
+function svcFirstFill(queue,map,tags){tags={...tags};const sug=[];let placed=0;
+  const waves={};queue.forEach(q=>{(waves[q.k]=waves[q.k]||new Set()).add(q.w)});
+  const ord={};Object.keys(waves).forEach(k=>ord[k]=[...waves[k]].sort((a,b)=>a-b));
+  const slotsOf=q=>Object.keys(map).map(Number).filter(v=>map[v]===q.k&&!tags[v]&&(!q.ruas||q.ruas.includes(rua(v)))).sort((a,b)=>rua(a)-rua(b)||a-b);
+  [0,1].forEach(step=>queue.forEach(q=>{if(q.w!==ord[q.k][step])return;const vs=slotsOf(q);if(vs.length){tags[vs[0]]=q.g;placed++;if(step)sug.push(q.g)}}));
+  return {tags,placed,sug}}
+function svcSugSet(c){try{const o=JSON.parse(localStorage.getItem("svc-occupation-v1")||"{}")||{};return new Set((o[c]&&o[c].sug)||[])}catch(e){return new Set()}}
+
+/* ============ MONTAR VAGAS AUTOMATICAMENTE ============
+   Vaga reaproveitada onda a onda: cada transportadora precisa, no mínimo, das vagas da sua MAIOR onda (pico).
+   Sobrando vaga, o resto é repartido pelo total de gaiolas (menos troca na vaga). Faltando, divide pelo pico.
+   Posição: mantém cada transportadora onde ela já está no layout (desenho lido ou padrão do ciclo) e cresce
+   para as vagas livres mais próximas. Vaga bloqueada (X) continua bloqueada. */
+const SVC_VAGAS=[...LR_NUMS[1],...LR_NUMS[2],...LR_NUMS[3],...LR_NUMS[5],...LR_NUMS[4]];
+function svcNeed(queue){const by={};queue.forEach(q=>{const o=by[q.k]=by[q.k]||{tot:0,w:{}};o.tot++;o.w[q.w]=(o.w[q.w]||0)+1});
+  Object.values(by).forEach(o=>{o.peak=Math.max(...Object.values(o.w));o.peakW=+Object.keys(o.w).find(w=>o.w[w]===o.peak)});return by}
+function svcSplit(ks,weight,total){const W=ks.reduce((a,k)=>a+weight(k),0)||1;const r={};let used=0;
+  const fr=ks.map(k=>{const x=total*weight(k)/W;r[k]=Math.floor(x);used+=r[k];return [k,x-r[k]]}).sort((a,b)=>b[1]-a[1]);
+  for(let i=0;used<total&&i<fr.length;i++,used++)r[fr[i][0]]++;return r}
+function svcAutoVagas(base,queue){
+  const need=svcNeed(queue);const ks=Object.keys(need);
+  const act=v=>!(base[v]==="X");
+  // caminho das vagas, em "S" para os blocos continuarem colados: Rua 1 desce, Rua 2 sobe, Rua 3 vai para a direita,
+  // depois Rua 5 (da direita para a esquerda) e Rua 4 (VUC) por último
+  const PATH={1:LR_NUMS[1],2:[...LR_NUMS[2]].reverse(),3:LR_NUMS[3],5:[...LR_NUMS[5]].reverse(),4:LR_NUMS[4]};
+  const cap={};[1,2,3,5,4].forEach(r=>cap[r]=PATH[r].filter(act).length);
+  const sumPeak=ks.filter(k=>k!=="VUC").reduce((a,k)=>a+need[k].peak,0);
+  // MELI EXTRA: SÓ na Rua 3, do fim (65) para o começo, deixando as 3 primeiras vagas da rua (35–37)
+  // para uma transportadora pequena — igual ao layout do dia a dia. O resto das gaiolas dela espera na fila.
+  // VUC (PM): a Rua 4 inteira vira área compartilhada de VUC e sai da conta das outras ruas
+  const hasVuc=!!need.VUC;const PATHS=hasVuc?[1,2,3,5]:[1,2,3,5,4];
+  const ME_FOLGA=3;const others=ks.filter(k=>k!=="ME"&&k!=="VUC");const meCap=need.ME?Math.max(0,cap[3]-ME_FOLGA):0;
+  let meN=need.ME?Math.min(meCap,need.ME.peak):0;
+  const sumO=others.reduce((a,k)=>a+need[k].peak,0);
+  // usa as ruas 1, 2 e 3; só abre a 5 e depois a 4 se não couber
+  const ruas=[1,2,3];for(const r of PATHS.slice(3)){if(sumO+meN<=ruas.reduce((a,x)=>a+cap[x],0))break;ruas.push(r)}
+  const S=ruas.reduce((a,r)=>a+cap[r],0);let restS=S-meN;
+  const tgt={};
+  if(sumO<=restS){let ex=restS-sumO;
+    if(need.ME&&meN<meCap){const all=ks.reduce((a,k)=>a+need[k].tot,0)||1;const add=Math.min(meCap-meN,Math.round(ex*need.ME.tot/all));meN+=add;ex-=add}
+    const e2=svcSplit(others,k=>need[k].tot,ex);others.forEach(k=>tgt[k]=need[k].peak+(e2[k]||0))}
+  else if(restS>=others.length){const r=svcSplit(others,k=>Math.max(0,need[k].peak-1),restS-others.length);others.forEach(k=>tgt[k]=1+(r[k]||0))}
+  else{others.sort((a,b)=>need[b].peak-need[a].peak).forEach((k,i)=>tgt[k]=i<restS?1:0)}
+  const map={};SVC_VAGAS.forEach(v=>map[v]=base[v]==="X"?"X":"V");
+  const taken=new Set();
+  if(hasVuc)PATH[4].forEach(v=>{map[v]="VUC";taken.add(v)}); // bloqueada na Rua 4 também vira VUC: no PM ela é a área dos VUC
+  if(meN>0){let n=meN;for(const v of [...PATH[3]].reverse()){if(!n)break;if(act(v)){map[v]="ME";taken.add(v);n--}}}
+  // começo da Rua 3 (antes da MELI EXTRA): a(s) transportadora(s) menor(es)
+  if(meN>0){const left=PATH[3].filter(v=>act(v)&&!taken.has(v));const small=others.filter(k=>tgt[k]>0).sort((a,b)=>need[a].tot-need[b].tot);
+    for(const v of left){const k=small.find(x=>tgt[x]>0);if(!k)break;map[v]=k;taken.add(v);tgt[k]--}}
+  // ordem dos blocos: grande, pequena, grande, pequena... (a pequena acaba e libera vaga para a grande do lado)
+  const rest=others.filter(k=>tgt[k]>0).sort((a,b)=>need[b].tot-need[a].tot||a.localeCompare(b));
+  const seq=[];let lo=0,hi=rest.length-1;while(lo<=hi){seq.push(rest[lo++]);if(lo<=hi)seq.push(rest[hi--])}
+  // a última da fila encosta na MELI EXTRA (grande): deixa uma pequena ali
+  if(seq.length>1&&map[PATH[3].filter(act).slice(-1)[0]]==="ME"){const last=seq[seq.length-1];if(need[last].tot>need[seq[seq.length-2]].tot){seq.push(seq.splice(seq.length-2,1)[0])}}
+  const path=ruas.flatMap(r=>PATH[r]).filter(v=>act(v)&&!taken.has(v));let i=0;
+  seq.forEach(k=>{for(let j=0;j<tgt[k]&&i<path.length;j++)map[path[i++]]=k});
+  if(hasVuc&&!ruas.includes(4))ruas.push(4);
+  return {map,need,S,sumPeak,ruas,vuc:hasVuc?{cap:PATH[4].length,peak:need.VUC.peak,tot:need.VUC.tot}:null}}
+function PlanImport({id,big,setCur}){
+  const [busy,setBusy]=useState(false);const [err,setErr]=useState("");const [ok,setOk]=useState("");const [over,setOver]=useState(false);
+  const go=async f=>{if(!f)return;setErr("");setOk("");setBusy(true);try{const o=await svcImportPlanFile(f);
+      const c=detectCiclo(o.title||"",o.rows,o.map||{});if(c&&setCur)setCur(c);setOk(`Planejamento importado: ${f.name}${c?" · ciclo "+c:""}. O layout é montado sozinho.`)}
+    catch(e){console.error(e);setErr(e&&e.code==="cols"?"Não achei as colunas de rota/gaiola e transportadora nessa planilha.":e&&e.code==="empty"?"Não encontrei linhas nessa planilha.":"Não consegui ler esse arquivo. Use .xlsx, .xls ou .csv.")}
+    finally{setBusy(false)}};
+  return html`<div onDragOver=${e=>{e.preventDefault();setOver(true)}} onDragLeave=${()=>setOver(false)} onDrop=${e=>{e.preventDefault();setOver(false);go(e.dataTransfer.files[0])}}
+      class=${"rounded-2xl border border-dashed flex flex-wrap items-center gap-3 "+(big?"p-5":"p-3")} style=${{borderColor:over?"var(--accent)":"rgba(255,255,255,.22)",background:over?"rgba(76,195,255,.08)":"rgba(255,255,255,.02)"}}>
+    <input id=${id} type="file" accept=".xlsx,.xls,.xlsm,.csv,.txt" class="sr-only" onChange=${e=>{go(e.target.files[0]);e.target.value=""}}/>
+    <label for=${id} class="cursor-pointer text-sm font-semibold px-5 py-2.5 rounded-full" style=${{background:"var(--accent)",color:"#04121b"}}>${busy?"Lendo…":"Importar planejamento"}</label>
+    <div class="text-sm min-w-0 flex-1"><div class="font-semibold">Clique no botão ou arraste a planilha aqui</div>
+      <div class="text-muted text-xs">Excel ou CSV do planejamento do ciclo (ROTA, GAIOLA, transportadora MLP e ONDA). O app divide as ondas e monta as vagas sozinho.</div></div>
+    ${err&&html`<div class="basis-full text-sm" style=${{color:"#ff8a8c"}}>${err}</div>`}
+    ${ok&&html`<div class="basis-full text-xs" style=${{color:"#5ee6b0"}}>${ok}</div>`}
+  </div>`}
+
+function VagasAuto({cur,L,src,auto,setAuto,onMontar,setCur}){
+  const queue=useMemo(()=>svcWaveQueue(src),[src]);const need=useMemo(()=>svcNeed(queue),[queue]);
+  const [open,setOpenRaw]=useState(()=>{try{return localStorage.getItem("svc-vagas-open")!=="0"}catch(e){return true}});
+  const setOpen=v=>{setOpenRaw(v);try{localStorage.setItem("svc-vagas-open",v?"1":"0")}catch(e){}};
+  const [ask,setAsk]=useState(false);const [msg,setMsg]=useState("");useEffect(()=>{if(!msg)return;const t=setTimeout(()=>setMsg(""),5000);return()=>clearTimeout(t)},[msg]);
+  if(!src||!queue.length)return html`<section class="md:col-span-12"><${PlanImport} id="planFileLayout" big=${true} setCur=${setCur}/></section>`;
+  const c=detectCiclo(src.title||"",src.rows,src.map||{});
+  if(c&&c!==cur)return html`<div class="md:col-span-12 text-xs rounded-lg px-3 py-2 flex flex-wrap items-center gap-2" style=${{background:"rgba(255,181,71,.1)",color:"var(--amber)"}}>O planejamento carregado é do ciclo ${c}. <button type="button" onClick=${()=>setCur(c)} class="font-semibold underline underline-offset-2">Abrir layout ${c}</button> <span class="text-muted">ou importe o planejamento do ${cur} na aba Planejamento.</span></div>`;
+  const got={};Object.values(L.map).forEach(k=>got[k]=(got[k]||0)+1);
+  const ks=Object.keys(need).sort((a,b)=>need[b].tot-need[a].tot);
+  const ativas=SVC_VAGAS.filter(v=>L.map[v]&&L.map[v]!=="X").length;const sumPeak=ks.reduce((a,k)=>a+need[k].peak,0);
+  const faltam=ks.filter(k=>(got[k]||0)<need[k].peak);
+  const sobra=Object.keys(got).filter(k=>k!=="X"&&k!=="V"&&!need[k]);
+  const btn="text-xs font-semibold px-3 py-1.5 rounded-full whitespace-nowrap";
+  const vucDe=(()=>{const o={};queue.forEach(q=>{if(q.vuc)o[q.kr]=(o[q.kr]||0)+1});return Object.entries(o).sort((a,b)=>b[1]-a[1])})();
+  const outro=planOutroDia(src.rows||[],src.map||{});
+  return html`<${motion.section} variants=${rise} class="md:col-span-12 rounded-2xl px-3 py-2.5 flex flex-col gap-2.5" style=${{background:"rgba(94,230,176,.05)",border:"1px solid rgba(94,230,176,.22)"}}>
+    <div class="flex flex-wrap items-center gap-2 min-w-0">
+      <button type="button" onClick=${()=>setOpen(!open)} aria-expanded=${open} class="flex items-center gap-2 text-left">
+        <span class="text-muted text-xs" style=${{transform:open?"rotate(90deg)":"none"}}>▶</span>
+        <span class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold whitespace-nowrap">Vagas automáticas · ${cur}</span></button>
+      <span class="text-xs text-muted">· precisa de <b class="text-ink">${sumPeak}</b> vagas ao mesmo tempo (maior onda de cada transportadora) · tem <b class="text-ink">${ativas}</b> livres
+        ${faltam.length?html` · <b style=${{color:"var(--amber)"}}>${plural(faltam.length,"transportadora com fila","transportadoras com fila")}</b>`:html` · <b style=${{color:"#5ee6b0"}}>todas cabem</b>`}</span>
+      <div class="ml-auto flex items-center gap-2">
+        <label class="text-xs inline-flex items-center gap-1.5 text-muted"><input id="autoVagas" type="checkbox" checked=${auto} onChange=${e=>setAuto(e.target.checked)}/>Montar sozinho ao importar</label>
+        <button type="button" onClick=${()=>{if(!ask){setAsk(true);setTimeout(()=>setAsk(false),4000);return}setAsk(false);const r=onMontar();setMsg(r?`Vagas do ${cur} montadas pelo planejamento · ${r.placed} gaiolas da 1ª onda colocadas. Dá para desfazer em Editar layout › Desfazer.`:"Importe o planejamento primeiro.")}}
+          class=${btn} style=${ask?{background:"#ffb547",color:"#1b1b1b"}:{background:"#5ee6b0",color:"#04121b"}}>${ask?"Confirmar: remontar as vagas":"Montar vagas agora"}</button>
+        <button type="button" onClick=${()=>setOpen(!open)} class="text-xs text-muted hover:text-ink px-1">${open?"Recolher":"Mostrar"}</button></div>
+    </div>
+    ${msg&&html`<div class="text-xs rounded-lg px-3 py-1.5" style=${{background:"rgba(94,230,176,.1)",color:"#5ee6b0"}}>${msg}</div>`}
+    ${open&&html`<div class="flex flex-col gap-2">
+      <p class="text-[11px] text-muted">A vaga é reaproveitada: quando a gaiola de uma onda sai, entra a próxima da mesma transportadora. Por isso cada transportadora precisa de vagas para a sua maior onda. Regras da montagem: usa as ruas 1, 2 e 3 (a 5 e a 4 só se não couber), MELI EXTRA só na Rua 3, da 65 para trás, deixando as 3 primeiras vagas (35–37) para uma transportadora pequena (se tiver mais gaiolas que vagas, elas esperam na fila e reaproveitam as vagas dela), e cada transportadora pequena fica ao lado de uma grande — quando a pequena acaba as rotas, a vaga dela passa para a vizinha grande que ainda tem fila. Vaga bloqueada continua bloqueada.</p>
+      ${need.VUC&&html`<p class="text-[11px] rounded-lg px-2.5 py-1.5" style=${{background:"rgba(109,40,217,.14)",color:"#d8c8ff"}}><b>VUC no PM:</b> as gaiolas com MODAL VUC (de qualquer transportadora, híbridas inteiras) vão para a <b>Rua 4</b>, que vira área compartilhada: quando uma VUC sai, entra a próxima VUC da fila, seja de quem for. A calculadora segura no máximo ${VUC_CAP} VUC por onda. A Rua 5 fica para as transportadoras normais.</p>`}
+      ${outro.length>0&&html`<p class="text-[11px] text-muted">${plural(outro.length,"rota de outro dia ficou","rotas de outro dia ficaram")} fora (saem no dia seguinte): ${outro.map(o=>o.rota+" ("+o.d+")").join(", ")}.</p>`}
+      <div class="overflow-x-auto"><table class="w-full min-w-[560px] text-xs">
+        <thead><tr class="text-left text-[10px] uppercase tracking-[.14em] text-muted"><th class="py-1.5 px-1">Transportadora</th><th class="py-1.5 px-1">Gaiolas</th><th class="py-1.5 px-1">Por onda</th><th class="py-1.5 px-1">Precisa</th><th class="py-1.5 px-1">Vagas no layout</th><th class="py-1.5 px-1">Por vaga (rodadas)</th><th class="py-1.5 px-1">Situação</th></tr></thead>
+        <tbody>${ks.map(k=>{const n=need[k],g=got[k]||0;const ws=Object.keys(n.w).map(Number).sort((a,b)=>a-b);
+          return html`<tr key=${k} class="border-t border-line">
+            <td class="py-1.5 px-1"><div class="flex items-center gap-2"><${Swatch} k=${k}/>${CARRIERS[k].n}</div>
+              ${k==="VUC"&&html`<div class="text-[10px] text-muted mt-0.5">Rua 4 · ${vucDe.map(([x,c])=>(CARRIERS[x]?CARRIERS[x].n:x)+" "+c).join(" · ")}</div>`}</td>
+            <td class="py-1.5 px-1 tnum">${n.tot}</td>
+            <td class="py-1.5 px-1 tnum whitespace-nowrap">${ws.map(w=>html`<span key=${w} class="mr-1.5"><span style=${{color:ONDA_COR[(w-1)%10]}}>O${w}</span> ${n.w[w]}</span>`)}</td>
+            <td class="py-1.5 px-1 tnum font-semibold">${n.peak}</td>
+            <td class="py-1.5 px-1 tnum font-semibold">${g}</td>
+            <td class="py-1.5 px-1 tnum whitespace-nowrap">${g?(()=>{const b=Math.floor(n.tot/g),x=n.tot%g;return html`<b>${x?b+"–"+(b+1):b}</b> gaiolas <span class="text-muted">${x?`(${x} vaga${x>1?"s":""} com ${b+1}, ${g-x} com ${b})`:`em cada vaga`}</span>`})():html`<span class="text-muted">—</span>`}</td>
+            <td class="py-1.5 px-1">${g>=n.peak?html`<span style=${{color:"#5ee6b0"}}>✓ cabe${g>n.peak?` · ${g-n.peak} a mais`:""}</span>`:g===0?html`<span style=${{color:"#ff8a8c"}}>sem vaga</span>`:html`<span style=${{color:"var(--amber)"}}>${n.peak-g} da onda ${n.peakW} esperam na fila (entram como 2ª, 3ª… gaiola de cada vaga)</span>`}</td></tr>`})}</tbody>
+      </table></div>
+      ${sobra.length>0&&html`<p class="text-[11px] text-muted">Têm vaga no layout mas não estão no planejamento: ${sobra.map(k=>CARRIERS[k].n+" ("+got[k]+")").join(", ")}. "Montar vagas agora" passa essas vagas para quem precisa.</p>`}
+    </div>`}
+  </${motion.section}>`;
+}
+function OcupacaoGradual({cur,L,onStart,onRelease,onPromote,onClear,state,src}){
+  const queue=useMemo(()=>svcWaveQueue(src),[src]);
+  const active=state&&state.key===svcOccupationKey(src||{},cur);
+  const activeTags=active?(state.tags||{}):{};
+  const done=active?(state.done||[]):[];
+  const assigned=new Set(Object.values(activeTags).filter(Boolean));
+  const remaining=queue.filter(q=>!assigned.has(q.g)&&!done.includes(q.g));
+  const occupied=Object.entries(activeTags).filter(([,t])=>t).sort((a,b)=>+a[0]-+b[0]);
+  const byWave={};queue.forEach(q=>{const k=q.w;(byWave[k]=byWave[k]||{total:0,finished:0,live:0,pending:0});byWave[k].total++;if(done.includes(q.g))byWave[k].finished++;else if(assigned.has(q.g))byWave[k].live++;else byWave[k].pending++});
+  const effectiveMap=layoutVazio(L)?LAYOUTS[cur].map:L.map;
+  const tentative=useMemo(()=>{
+    const tags=active?activeTags:{};
+    return svcPlanSlots(queue,effectiveMap,tags,done);
+  },[queue,effectiveMap,active,state]);
+  const [expanded,setExpanded]=useState(true);
+  const [promotion,setPromotion]=useState({});
+  const [open,setOpen]=useState(true);
+  const [confirm,setConfirm]=useState(false);
+  const [msg,setMsg]=useState("");
+  useEffect(()=>{setConfirm(false);setMsg("")},[cur,src&&src.savedAt]);
+  if(!src||!src.ondaCalc)return html`<${Card} className="md:col-span-12" title="Ocupação gradual das vagas"><p class="text-xs text-muted">Importe o planejamento e calcule as ondas para habilitar a ocupação gradual.</p></${Card}>`;
+  return html`<${Card} className="md:col-span-12" title="Planejamento da expedição · ondas por vaga" right=${html`<button type="button" class="text-xs text-muted" onClick=${()=>setOpen(!open)}>${open?"Recolher":"Abrir"}</button>`}>
+    ${open&&html`<div class="space-y-3">
+      <p class="text-xs text-muted">A visão mostra a rota da 1ª onda em cada vaga e a sequência de reutilização para as próximas ondas. Se o motorista da onda 1 atrasar, antecipe uma rota de outra onda sem apagar a primeira da fila. A troca é uma decisão de planejamento, não uma confirmação de saída física.</p>
+      <div class="flex flex-wrap gap-2 items-center">
+        ${!active?html`<button type="button" onClick=${()=>{setConfirm(true)}} class="rounded-full bg-white text-black font-semibold text-xs px-4 py-2">Montar primeira onda</button>`:
+          html`<span class="rounded-full px-3 py-1.5 text-xs" style=${{background:"rgba(94,230,176,.1)",color:"#5ee6b0"}}>Visão da expedição montada</span>`}
+        ${active&&html`<button type="button" onClick=${()=>setConfirm(true)} class="text-xs px-3 py-1.5 rounded-full border border-white/20">Remontar primeira onda</button>`}
+        <span class="text-xs text-muted">${queue.length} gaiolas · ${occupied.length} em vagas · ${done.length} liberadas · ${remaining.length} na fila</span>
+      </div>
+      ${confirm&&html`<div class="rounded-xl p-3 border border-amber-500/30 flex flex-wrap gap-2 items-center">
+        <span class="text-xs" style=${{color:"var(--amber)"}}>A montagem define a primeira ocupação das vagas do ciclo. Nomes manuais que não pertencem ao planejamento serão mantidos. A previsão das ondas seguintes aparecerá na tabela abaixo.</span>
+        <button type="button" onClick=${()=>{onStart();setConfirm(false);setMsg("Primeira onda distribuída. Confira as vagas e antecipe rotas conforme a necessidade da operação.")}} class="bg-white text-black rounded-full px-3 py-1.5 text-xs font-semibold">Confirmar</button>
+        <button type="button" onClick=${()=>setConfirm(false)} class="text-xs text-muted px-3 py-1.5">Cancelar</button>
+      </div>`}
+      ${msg&&html`<p class="text-xs" style=${{color:"var(--accent)"}}>${msg}</p>`}
+      ${active&&html`<div class="flex flex-wrap gap-2">${Object.keys(byWave).sort((a,b)=>+a-+b).map(w=>{const a=byWave[w];return html`<div key=${w} class="border border-white/10 rounded-xl p-2 min-w-[130px] text-xs"><b style=${{color:ONDA_COR[(+w-1)%10]}}>Onda ${w}</b><div class="text-muted mt-1">${a.finished}/${a.total} concluídas</div><div class="text-muted">${a.live} nas vagas · ${a.pending} na fila</div></div>`})}</div>`}
+      <div class="flex flex-wrap gap-2 items-center">
+        <button type="button" class="rounded-full border border-white/20 text-xs px-3 py-2" onClick=${()=>setExpanded(!expanded)}>${expanded?"Ocultar":"Mostrar"} plano completo por vaga</button>
+        <button type="button" class="rounded-full bg-white text-black text-xs font-semibold px-3 py-2" onClick=${()=>{
+          const rows=[["Vaga","Rua","Transportadora","Ordem","Onda","Rota/Gaiola","Situação"].join("\t")];
+          Object.entries(tentative.out).sort((a,b)=>+a[0]-+b[0]).forEach(([v,arr])=>arr.forEach((q,i)=>rows.push([v,rua(+v),svcQNome(q),i+1,q.w,q.g,i===0?"Primeira na vaga":"Próxima"].join("\t"))));
+          svcCopyText(rows.join("\n")).then(()=>setMsg("Plano por vaga copiado. Cole no Excel ou envie para a expedição.")).catch(()=>setMsg("Não foi possível copiar; confira as permissões do navegador."));
+        }}>Copiar plano por vaga</button>
+        <span class="text-xs text-muted">${Object.values(tentative.out).filter(a=>a.length).length} vagas planejadas · ${tentative.unplaced.length} sem vaga compatível</span>
+      </div>
+      ${expanded&&html`<div class="max-h-[480px] overflow-auto rounded-xl border border-white/10">
+        <table class="w-full text-xs text-left" style=${{borderCollapse:"collapse"}}>
+          <thead class="sticky top-0 bg-[#202832] text-white"><tr><th class="px-3 py-2">Vaga</th><th class="px-3 py-2">Transportadora</th><th class="px-3 py-2">Primeira ocupação</th><th class="px-3 py-2">Próximas nesta vaga (2ª, 3ª…)</th><th class="px-3 py-2">Antecipar</th></tr></thead>
+          <tbody>${Object.entries(tentative.out).filter(([,a])=>a.length).sort((a,b)=>+a[0]-+b[0]).map(([v,arr])=>{
+            const k=effectiveMap[v], current=arr[0], opts=queue.filter(q=>q.k===k&&!done.includes(q.g)&&(!q.ruas||q.ruas.includes(rua(+v)))&&q.g!==current.g&&!assigned.has(q.g));
+            return html`<tr key=${v} class="border-t border-white/10 align-top">
+              <td class="px-3 py-2 font-mono font-bold">${v}<div class="text-[10px] text-muted">Rua ${rua(+v)}</div></td>
+              <td class="px-3 py-2">${CARRIERS[k]?.n||k}</td>
+              <td class="px-3 py-2"><b class="font-mono">${shortTag(current.g)}</b><div style=${{color:ONDA_COR[(current.w-1)%10]}}>Onda ${current.w}</div></td>
+              <td class="px-3 py-2 min-w-[180px]">${arr.slice(1).map((q,i)=>html`<div key=${q.g} class="py-0.5"><span class="text-muted">${i+2}ª ·</span> <span style=${{color:ONDA_COR[(q.w-1)%10]}}>O${q.w}</span> · ${shortTag(q.g)}</div>`)}</td>
+              <td class="px-3 py-2 min-w-[185px]">${active&&opts.length?html`<div class="flex gap-1 items-center"><select aria-label=${"Antecipar rota na vaga "+v} class="min-w-0 max-w-[125px] bg-[#18202a] border border-white/20 rounded-lg px-1 py-1 text-xs" value=${promotion[v]||""} onChange=${e=>setPromotion(o=>({...o,[v]:e.target.value}))}><option value="">Escolher rota</option>${opts.map(q=>html`<option key=${q.g} value=${q.g}>O${q.w} · ${q.g}</option>`)}</select><button type="button" disabled=${!promotion[v]} class="border border-white/20 rounded-lg px-2 py-1 disabled:opacity-40" onClick=${()=>{onPromote(+v,promotion[v]);setPromotion(o=>({...o,[v]:""}));setMsg("Rota antecipada na vaga "+v+"; a anterior continua no plano.")}}>Subir</button></div>`:html`<span class="text-muted text-[10px]">${active?"Sem outra rota pendente":"Monte a primeira onda"}</span>`}</td>
+            </tr>`})}</tbody>
+        </table>
+      </div>`}
+      ${tentative.unplaced.length>0&&html`<p class="text-xs" style=${{color:"var(--amber)"}}>Sem vaga compatível: ${tentative.unplaced.slice(0,20).map(q=>q.g+" (O"+q.w+")").join(" · ")}${tentative.unplaced.length>20?" · ...":""}</p>`}
+      ${active&&html`<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">${occupied.map(([v,t])=>{const q=queue.find(x=>x.g===t);return html`<div key=${v} class="rounded-xl p-2 border border-white/10 bg-white/[.04] flex flex-col gap-1"><span class="text-[10px] text-muted">Vaga ${v} · ${CARRIERS[L.map[v]]?.n||L.map[v]}</span><b class="font-mono text-xs break-all">${shortTag(t)}</b><span class="text-[10px]" style=${{color:q?ONDA_COR[(q.w-1)%10]:"var(--muted)"}}>${q?"Onda "+q.w:"Manual"}</span><button type="button" disabled=${!q} onClick=${()=>{const next=onRelease(+v);setMsg(next?(next.passou?`Vaga ${v} liberada. A transportadora acabou as rotas: a vaga passou para ${CARRIERS[next.passou].n} · ${next.g} (onda ${next.w}).`:`Vaga ${v} liberada. Próxima: ${next.g} (onda ${next.w}).`):`Vaga ${v} liberada; sem outra gaiola pendente nela nem nas vizinhas.`)}} class="mt-1 rounded-lg text-[11px] py-1.5 font-semibold disabled:opacity-30" style=${{background:"rgba(94,230,176,.17)",color:"#5ee6b0"}}>Liberar vaga ${v}</button></div>`})}</div>`}
+      ${active&&remaining.length>0&&html`<p class="text-xs" style=${{color:"var(--amber)"}}>Aguardando vaga: ${remaining.slice(0,12).map(q=>`${q.g} (O${q.w}, ${svcQNome(q)})`).join(" · ")}${remaining.length>12?` · +${remaining.length-12} outras`:""}</p>`}
+      ${active&&html`<p class="text-[11px] text-muted">As vagas sem gaiola na fila ficam livres. As rotas concluídas não retornam automaticamente ao layout. Dados salvos neste navegador.</p>`}
+    </div>`}
+  </${Card}>`;
+}
+
+function App(){
+  let init="AM0-CHP";try{const s=localStorage.getItem("svc-tab");if(s&&LAYOUTS[s])init=s}catch(e){}
+  const [cur,setCurRaw]=useState(init);const [filter,setFilter]=useState(null);const [sel,setSel]=useState(null);
+  const PAGES=[{id:"layout",label:"Layout",icon:"▦",desc:"Mapa das vagas"},{id:"ondas",label:"Calculadora",icon:"≋",desc:"Divisão das ondas"},{id:"expedicao",label:"Expedição",icon:"⇄",desc:"Rotas por vaga"},{id:"importar",label:"Planejamento",icon:"▤",desc:"Importação e leitura"}];
+  const [page,setPageRaw]=useState(()=>{try{const x=localStorage.getItem("svc-page");return PAGES.some(p=>p.id===x)?x:"layout"}catch(e){return "layout"}});
+  const setPage=x=>{setPageRaw(x);try{localStorage.setItem("svc-page",x)}catch(e){}};
+  const setCur=k=>{if(k===cur)return;setCurRaw(k);setFilter(null);setSel(null);try{localStorage.setItem("svc-tab",k)}catch(e){}};
+  const RA0=(()=>{try{return JSON.parse(localStorage.getItem("svc-read-at")||"{}")||{}}catch(e){return {}}})();
+  const semData=(key)=>{try{const o=JSON.parse(localStorage.getItem(key)||"{}")||{};const n={};Object.keys(o).forEach(k=>{if(RA0[k])n[k]=o[k]});localStorage.setItem(key,JSON.stringify(n));return n}catch(e){return {}}};
+  const [edits,setEdits]=useState(()=>semData("svc-edits"));
+  const [hist,setHist]=useState({});
+  const [respAll,setRespAll]=useState(()=>getRespAll());
+  const [readAt,setReadAt]=useState(()=>{try{return JSON.parse(localStorage.getItem("svc-read-at")||"{}")}catch(e){return {}}});
+  const storeReadAt=o=>{setReadAt(o);try{localStorage.setItem("svc-read-at",JSON.stringify(o))}catch(e){}svcPatchRemote({readAt:o})};
+  const [geos,setGeos]=useState(()=>{try{return JSON.parse(localStorage.getItem("svc-geo9")||"{}")}catch(e){return {}}});
+  const [tagOv,setTagOv]=useState(()=>semData("svc-tags"));
+  const [occupation,setOccupation]=useState(()=>{try{return JSON.parse(localStorage.getItem("svc-occupation-v1")||"{}")||{}}catch(e){return {}}});
+  const saveOccupation=o=>{setOccupation(o);try{localStorage.setItem("svc-occupation-v1",JSON.stringify(o))}catch(e){}};
+  const sourceNow=()=>svcReadPlan();
+  const occCurrent=()=>{const src=sourceNow();const st=occupation[cur];return src&&st&&st.key===svcOccupationKey(src,cur)?st:null};
+  const beginOccupation=()=>{
+    const src=sourceNow();const queue=svcWaveQueue(src);if(!queue.length)return;
+    const map=layoutVazio(L)?{...LAYOUTS[cur].map}:L.map;
+    const names=new Set(queue.map(q=>q.g));const tags={};
+    Object.entries(L.tags).forEach(([v,t])=>{if(t&&!names.has(t))tags[v]=t});
+    const done=[];
+    const ff=svcFirstFill(queue,map,tags);
+    if(layoutVazio(L))storeEdits({...edits,[cur]:map});
+    storeTags({...tagOv,[cur]:ff.tags});stamp();
+    saveOccupation({...occupation,[cur]:{key:svcOccupationKey(src,cur),tags:ff.tags,done,sug:ff.sug}});
+  };
+  const promoteOccupied=(v,g)=>{
+    const src=sourceNow(),st=occCurrent();if(!src||!st||!g)return;
+    const q=svcWaveQueue(src).find(x=>x.g===g);
+    if(!q||q.k!==L.map[v]||(q.ruas&&!q.ruas.includes(rua(v)))||(st.done||[]).includes(g))return;
+    if(Object.entries(st.tags).some(([other,t])=>+other!==v&&t===g))return;
+    const tags={...st.tags,[v]:g};
+    storeTags({...tagOv,[cur]:tags});saveOccupation({...occupation,[cur]:{...st,tags}});
+  };
+  const releaseOccupied=v=>{
+    const src=sourceNow(),st=occCurrent();if(!src||!st||!st.tags[v])return null;
+    const queue=svcWaveQueue(src),old=st.tags[v],completed=queue.find(q=>q.g===old);
+    if(!completed)return null;
+    const done=[...new Set([...(st.done||[]),old])];const tags={...st.tags};delete tags[v];const sugL=(st.sug||[]).filter(g=>g!==old);
+    const active=new Set(Object.values(tags).filter(Boolean));
+    const free=q=>!active.has(q.g)&&!done.includes(q.g)&&(!q.ruas||q.ruas.includes(rua(v)));
+    let next=queue.find(q=>q.k===L.map[v]&&free(q));let passou=null;
+    if(!next&&L.map[v]!=="VUC"){// a transportadora acabou: a vaga passa para a vizinha que ainda tem gaiola na fila (a com mais fila)
+      const pv=pos(v);const viz=[...new Set(Object.keys(L.map).map(Number).filter(u=>u!==v&&CARRIERS[L.map[u]]&&L.map[u]!=="X"&&L.map[u]!=="V"&&L.map[u]!==L.map[v]&&Math.hypot(pos(u).x-pv.x,pos(u).y-pv.y)<=STEP*1.25).map(u=>L.map[u]))];
+      const pend=k=>queue.filter(q=>q.k===k&&free(q)).length;const kk=viz.filter(k=>pend(k)>0&&k!=="VUC"&&(k!=="ME"||rua(v)===3)).sort((a,b)=>pend(b)-pend(a))[0];
+      if(kk){next=queue.find(q=>q.k===kk&&free(q));passou=kk;storeEdits({...edits,[cur]:{...L.map,[v]:kk}})}}
+    if(next)tags[v]=next.g;
+    storeTags({...tagOv,[cur]:tags});saveOccupation({...occupation,[cur]:{...st,tags,done,sug:sugL}});
+    return next?{...next,passou}:null;
+  };
+
+  const storeTags=o=>{setTagOv(o);try{localStorage.setItem("svc-tags",JSON.stringify(o))}catch(e){}svcPatchRemote({tagOv:o})};
+  const stamp=()=>{if(!readAt[cur])storeReadAt({...readAt,[cur]:new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})})};
+  const onTag=(v,t)=>{stamp();const cur2={...(tagOv[cur]||{}),[v]:t};storeTags({...tagOv,[cur]:cur2})};
+  const storeGeos=o=>{setGeos(o);try{localStorage.setItem("svc-geo9",JSON.stringify(o))}catch(e){}svcPatchRemote({geos:o})};
+  const storeEdits=o=>{setEdits(o);try{localStorage.setItem("svc-edits",JSON.stringify(o))}catch(e){}svcPatchRemote({edits:o})};
+  const layoutOf=k=>({...LAYOUTS[k],key:k,map:edits[k]||EMPTY_MAP,tags:{},readAt:readAt[k]||null,geo:mergeGeo(geos[k]),tags:(()=>{const t={};Object.entries(tagOv[k]||{}).forEach(([v,x])=>{if(x)t[v]=x;else delete t[v]});return t})()});
+  const L=useMemo(()=>layoutOf(cur),[cur,edits,geos,tagOv,readAt]);
+  const snap=()=>({map:L.map,geo:geos[cur]||null,tags:tagOv[cur]||null});
+  const pushHist=()=>setHist(h=>({...h,[cur]:[...(h[cur]||[]),snap()].slice(-60)}));
+  const onGeo=patch=>{pushHist();const g=geos[cur]||{};const ng={...g};["slots","blocks","tags","caps"].forEach(k=>{if(patch[k])ng[k]={...(g[k]||{}),...patch[k]}});storeGeos({...geos,[cur]:ng})};
+  const onEdit=nm=>{pushHist();stamp();storeEdits({...edits,[cur]:nm})};
+  const onUndo=()=>{const st=hist[cur]||[];if(!st.length)return;const prev=st[st.length-1];setHist({...hist,[cur]:st.slice(0,-1)});
+    const ne={...edits};if(layoutVazio({map:prev.map}))delete ne[cur];else ne[cur]=prev.map;storeEdits(ne);
+    const ng={...geos};if(prev.geo)ng[cur]=prev.geo;else delete ng[cur];storeGeos(ng);
+    const nt={...tagOv};if(prev.tags)nt[cur]=prev.tags;else delete nt[cur];storeTags(nt)};
+  
+  const onZero=()=>{pushHist();const ne={...edits};delete ne[cur];storeEdits(ne);storeTags({...tagOv,[cur]:{}});const nr={...readAt};delete nr[cur];storeReadAt(nr)};
+  const onDistribute=()=>{pushHist();stamp();const r=distributeRoutes(L.map,L.tags);storeTags({...tagOv,[cur]:r.tags});return r};
+  // layout automático: quando as ondas do planejamento mudam, recoloca as gaiolas do planejamento nas vagas (onda 1 primeiro).
+  // Nomes escritos à mão que não são do planejamento ficam onde estão.
+  const [planVer,setPlanVer]=useState(0);
+  useEffect(()=>{const f=()=>setPlanVer(v=>v+1);window.addEventListener("svc-plan-remote",f);return()=>window.removeEventListener("svc-plan-remote",f)},[]);
+  const [autoMsg,setAutoMsg]=useState("");useEffect(()=>{if(!autoMsg)return;const t=setTimeout(()=>setAutoMsg(""),5000);return()=>clearTimeout(t)},[autoMsg]);
+  // Ao importar um planejamento novo, a calculadora cria as ondas e o mapa é montado
+  // automaticamente. Não exige leitura anterior de desenho nem clique na aba Expedição.
+  // Preserva os ajustes existentes e não reinicia uma ocupação já iniciada.
+  const [autoVagas,setAutoVagasRaw]=useState(()=>{try{return localStorage.getItem("svc-auto-vagas")!=="0"}catch(e){return true}});
+  const setAutoVagas=v=>{setAutoVagasRaw(v);try{localStorage.setItem("svc-auto-vagas",v?"1":"0")}catch(e){}};
+  // monta o layout do ciclo c: vagas por transportadora (se automático) + gaiolas da 1ª onda de cada uma
+  const montarCiclo=(c,force)=>{
+    const src=svcReadPlan();
+    if(!src||!src.ondaCalc||!LAYOUTS[c])return null;
+    const queue=svcWaveQueue(src);
+    if(!queue.length)return null;
+    const key=svcOccupationKey(src,c);
+    const prior=occupation[c];
+    if(!force&&prior&&prior.key===key)return null;
+    const existing=edits[c];
+    const needsMap=!existing||layoutVazio({map:existing});
+    const base=needsMap?LAYOUTS[c].map:existing;
+    const map=(autoVagas||force)?svcAutoVagas(base,queue).map:{...base};
+    const planned=new Set(queue.map(q=>q.g));
+    const prev=tagOv[c]||{};
+    const tags={};
+    // Rótulos manuais externos ao planejamento não devem desaparecer.
+    Object.entries(prev).forEach(([v,g])=>{if(g&&!planned.has(g)&&map[v]!=="X"&&map[v]!=="V")tags[v]=g});
+    const ff=svcFirstFill(queue,map,tags);const placed=ff.placed;
+    storeEdits({...edits,[c]:map});
+    storeTags({...tagOv,[c]:ff.tags});
+    saveOccupation({...occupation,[c]:{key,tags:ff.tags,done:[],sug:ff.sug}});
+    storeReadAt({...readAt,[c]:new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})});
+    return {placed,c,sug:ff.sug.length};
+  };
+  useEffect(()=>{
+    const src=svcReadPlan();if(!src||!src.ondaCalc)return;
+    const c=detectCiclo(src.title||"",src.rows,src.map||{})||cur;
+    const r=montarCiclo(c,false);
+    if(r)setAutoMsg(`Layout ${c} montado automaticamente${autoVagas?" (vagas pelo planejamento)":""}: ${r.placed-r.sug} gaiolas da 1ª onda nas vagas${r.sug?` · ${r.sug} da onda seguinte já sugeridas nas vagas que sobraram`:""} · ondas seguintes na aba Expedição.`);
+  },[planVer]);
+  const montarAgora=()=>{pushHist();return montarCiclo(cur,true)};
+  const onRedistribute=()=>{pushHist();stamp();const r=distributeRoutes(L.map,{});storeTags({...tagOv,[cur]:r.tags});return r};
+  const onApplyRead=(t,res,dist)=>{pushHist();const m=allV();Object.entries(res.vagas).forEach(([v,k])=>m[v]=k);let tags={...res.gaiolas},placed=0;
+    if(dist){const r=distributeRoutes(m,tags);tags=r.tags;placed=r.placed}
+    storeEdits({...edits,[t]:m});storeTags({...tagOv,[t]:tags});storeReadAt({...readAt,[t]:new Date().toLocaleString("pt-BR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})});if(t!==cur)setCur(t);return {vagas:Object.keys(res.vagas).length,placed}};
+  const onReset=()=>{pushHist();const nr={...readAt};delete nr[cur];storeReadAt(nr);const nt={...tagOv};delete nt[cur];storeTags(nt);const ne={...edits};delete ne[cur];storeEdits(ne);const ng={...geos};delete ng[cur];storeGeos(ng)};
+  const pick=v=>{setSel(v);setFilter(null)};
+  const [infoOpen,setInfoOpenRaw]=useState(()=>{try{return localStorage.getItem("svc-info-open")==="1"}catch(e){return false}});
+  const setInfoOpen=v=>{setInfoOpenRaw(v);try{localStorage.setItem("svc-info-open",v?"1":"0")}catch(e){}};
+  const pickFilter=k=>{setFilter(k);setSel(null)};
+  return html`<div>
+    <${Nav} cur=${cur} setCur=${setCur}/>
+    <main class="max-w-7xl mx-auto px-4 pt-20 pb-16">
+      <div class="mb-4 grid grid-cols-2 sm:grid-cols-4 gap-2" role="tablist" aria-label="Seções do aplicativo">
+        ${PAGES.map(p=>html`<button type="button" key=${p.id} role="tab" aria-selected=${page===p.id} onClick=${()=>setPage(p.id)} class="rounded-2xl border text-left px-3 py-3 min-w-0 transition-colors" style=${page===p.id?{background:"rgba(76,195,255,.15)",borderColor:"rgba(76,195,255,.65)",color:"#eaf8ff"}:{background:"rgba(255,255,255,.035)",borderColor:"rgba(255,255,255,.09)",color:"var(--muted)"}}>
+          <span class="text-sm font-semibold block"><span class="mr-1.5">${p.icon}</span>${p.label}</span>
+          <span class="text-[10px] hidden sm:block mt-1 opacity-70">${p.desc}</span>
+        </button>`)}
+      </div>
+      ${autoMsg&&html`<div class="text-xs rounded-lg px-3 py-1.5 mb-3" style=${{background:"rgba(94,230,176,.1)",color:"#5ee6b0"}}>${autoMsg}</div>`}
+      <div role="tabpanel" aria-label="Layout das vagas" style=${{display:page==="layout"?"grid":"none"}} class="grid-cols-1 md:grid-cols-12 gap-4">
+        <${VagasAuto} cur=${cur} L=${L} src=${sourceNow()} auto=${autoVagas} setAuto=${setAutoVagas} onMontar=${montarAgora} setCur=${setCur}/>
+        <${Plant} cur=${cur} L=${L} filter=${filter} sel=${sel} onPick=${pick} onEdit=${onEdit} onGeo=${onGeo} onTag=${onTag} onZero=${onZero} onApplyRead=${onApplyRead} onDistribute=${onDistribute} onUndo=${onUndo} onReset=${onReset} canUndo=${(hist[cur]||[]).length>0} edited=${!!edits[cur]||!!geos[cur]||!!(tagOv[cur]&&Object.keys(tagOv[cur]).length)}/>
+        ${!layoutVazio(L)&&html`<${Table} cur=${cur} L=${L}/>`}
+      </div>
+      <div role="tabpanel" aria-label="Calculadora de ondas" style=${{display:page==="ondas"?"grid":"none"}} class="grid-cols-1 md:grid-cols-12 gap-4">
+        <${OndasCalc} cur=${cur} L=${L} onRedistribute=${onRedistribute}/>
+      </div>
+      <div role="tabpanel" aria-label="Planejamento da expedição" style=${{display:page==="expedicao"?"grid":"none"}} class="grid-cols-1 md:grid-cols-12 gap-4">
+        <${OcupacaoGradual} cur=${cur} L=${L} src=${sourceNow()} state=${occCurrent()} onStart=${beginOccupation} onRelease=${releaseOccupied} onPromote=${promoteOccupied}/>
+      </div>
+      <div role="tabpanel" aria-label="Importação do planejamento" style=${{display:page==="importar"?"grid":"none"}} class="grid-cols-1 md:grid-cols-12 gap-4">
+        <section class="md:col-span-12 flex flex-col gap-2"><div class="text-[11px] uppercase tracking-[.16em] text-muted font-semibold">Planejamento do ciclo</div>
+          ${(()=>{const sp=sourceNow();return sp?html`<div class="text-xs text-muted">Carregado agora: <b class="text-ink">${sp.name||"planejamento"}</b>${sp.at?" · "+sp.at:""}. Para trocar, importe outro:</div>`:null})()}
+          <${PlanImport} id="planFileTab" big=${true} setCur=${setCur}/></section>
+        <${MontarBar} cur=${cur} setCur=${setCur} onZero=${onZero} onApplyRead=${onApplyRead} onDistribute=${onDistribute} open=${infoOpen} setOpen=${setInfoOpen} L=${L} onPick=${pick}/>
+      </div>
+    </main>
+  </div>`;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App}/>`);
+</script>
+</body>
+</html>
